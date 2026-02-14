@@ -1,0 +1,95 @@
+{% extends "layouts/index.html" %}
+
+{% block title %}Fault Injection - Docker + Flask{% endblock %}
+
+{% block body %}
+  <div class="max-w-2xl mx-auto pt-12 pb-8 px-4">
+    <h1 class="text-2xl font-bold mb-2">Fault Injection Test Page</h1>
+    <p class="text-gray-600 mb-8">
+      Trigger deliberate failures to test observability and remediation flows.
+    </p>
+
+    {% if result %}
+      <div class="mb-8 p-4 rounded-lg border-2
+        {% if result.status == 'error' %}
+          bg-red-50 border-red-400 text-red-800
+        {% else %}
+          bg-green-50 border-green-400 text-green-800
+        {% endif %}
+      ">
+        <p class="font-bold text-lg mb-1">
+          {% if result.status == 'error' %}
+            Fault triggered
+          {% else %}
+            No fault detected
+          {% endif %}
+        </p>
+
+        {% if result.error_code %}
+          <p class="font-mono text-sm">Error code: {{ result.error_code }}</p>
+        {% endif %}
+
+        {% if result.detail %}
+          <p class="font-mono text-sm mt-1">Detail: {{ result.detail }}</p>
+        {% endif %}
+
+        {% if result.latency %}
+          <p class="font-mono text-sm mt-1">Latency: {{ result.latency }}</p>
+        {% endif %}
+
+        {% if result.data %}
+          <p class="font-mono text-sm mt-1">Data: {{ result.data }}</p>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    <div class="space-y-6">
+      <!-- SQL Error -->
+      <div class="p-5 border rounded-lg bg-white shadow-sm">
+        <h2 class="text-lg font-semibold mb-1">SQL Error Injection</h2>
+        <p class="text-gray-500 text-sm mb-3">
+          Executes invalid SQL (<code class="bg-gray-100 px-1 rounded">SELECT FROM</code>)
+          to trigger a database syntax error.
+        </p>
+        <form method="POST" action="/test-fault/run">
+          <button type="submit"
+            class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition">
+            Run Faulty Query
+          </button>
+        </form>
+      </div>
+
+      <!-- External API Latency -->
+      <div class="p-5 border rounded-lg bg-white shadow-sm">
+        <h2 class="text-lg font-semibold mb-1">External API Latency Simulation</h2>
+        <p class="text-gray-500 text-sm mb-3">
+          Calls <code class="bg-gray-100 px-1 rounded">mock_api:5001/data</code> which randomly
+          injects 2-8s latency (60% chance) and upstream 500 errors (30% chance).
+          Request timeout is 3s.
+        </p>
+        <form method="POST" action="/test-fault/external-api">
+          <button type="submit"
+            class="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded hover:bg-orange-700 transition">
+            Call External API
+          </button>
+        </form>
+      </div>
+
+      <!-- Database Timeout -->
+      <div class="p-5 border rounded-lg bg-white shadow-sm">
+        <h2 class="text-lg font-semibold mb-1">Database Timeout Simulation</h2>
+        <p class="text-gray-500 text-sm mb-3">
+          Executes <code class="bg-gray-100 px-1 rounded">SELECT pg_sleep(5)</code> to simulate
+          a slow query. With a small connection pool, concurrent requests will trigger
+          <code class="bg-gray-100 px-1 rounded">QueuePool limit</code> exhaustion.
+        </p>
+        <form method="POST" action="/test-fault/db-timeout">
+          <button type="submit"
+            class="px-4 py-2 bg-yellow-600 text-white text-sm font-medium rounded hover:bg-yellow-700 transition">
+            Run Slow DB Query
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endblock %}

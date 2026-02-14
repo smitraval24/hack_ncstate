@@ -107,6 +107,20 @@ services:
     <<: *default-assets
     command: "../run yarn:build:css"
 
+  mock_api:
+    image: "python:3.11"
+    container_name: "mock_api"
+    command: sh -c "pip install flask && python /mock_api.py"
+    environment:
+      API_FAULT_MODE: "${API_FAULT_MODE:-latency,error}"
+    profiles: ["web"]
+    restart: "${DOCKER_RESTART_POLICY:-unless-stopped}"
+    stop_grace_period: "3s"
+    volumes:
+      - "./mock_api.py:/mock_api.py"
+    ports:
+      - "${DOCKER_MOCK_API_PORT_FORWARD:-127.0.0.1:5001}:5001"
+
 volumes:
   postgres: {}
   redis: {}
