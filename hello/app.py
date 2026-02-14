@@ -4,6 +4,10 @@ from werkzeug.debug import DebuggedApplication
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from hello.extensions import db, debug_toolbar, flask_static_digest
+from hello.observability import (
+    ObservabilityMiddleware,
+    setup_logging,
+)
 from hello.page.views import page
 from hello.up.views import up
 
@@ -45,6 +49,10 @@ def create_app(settings_override=None):
     if settings_override:
         app.config.update(settings_override)
 
+    # Initialize observability (logging, metrics, middleware)
+    setup_logging(app)
+    observability(app)
+
     middleware(app)
 
     app.register_blueprint(up)
@@ -53,6 +61,21 @@ def create_app(settings_override=None):
     extensions(app)
 
     return app
+
+
+def observability(app):
+    """
+    Register observability middleware and setup monitoring.
+
+    :param app: Flask application instance
+    :return: None
+    """
+    # Initialize observability middleware for automatic request tracking
+    ObservabilityMiddleware(app)
+
+    app.logger.info("Observability initialized successfully")
+
+    return None
 
 
 def extensions(app):
