@@ -76,10 +76,34 @@ def test_fault_external_api():
 
     start = time.time()
 
+    # Circuit breaker implementation
+    circuit_open = False
+    circuit_open_time = None
+    circuit_breaker_timeout = 60  # seconds
+    failure_threshold = 3
+    failure_count = 0
+
     try:
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
         max_retries = 3
         retry_delay = 1  # seconds
+
+        if circuit_open and circuit_open_time and time.time() - circuit_open_time < circuit_breaker_timeout:
+            result = {
+                "status": "error",
+                "error_code": error_code,
+                "detail": "circuit_breaker_open",
+                "latency": "0.00s",
+            }
+            return render_template(
+                "page/test_fault.html",
+                flask_ver=version("flask"),
+                python_ver=os.environ["PYTHON_VERSION"],
+                debug=DEBUG,
+                enable_fault_injection=True,
+                result=result,
+            ), 503  # Service Unavailable
+
         for attempt in range(max_retries):
             try:
                 r = requests.get(f"{mock_api_base}/data", timeout=3)
@@ -96,11 +120,16 @@ def test_fault_external_api():
                     "data": r.json(),
                     "latency": f"{latency:.2f}s",
                 }
+                # Reset failure count upon success
+                failure_count = 0
                 break  # If successful, break the retry loop
             except requests.exceptions.RequestException as e:
+                failure_count += 1
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
+                    from flask import current_app
+
                     current_app.logger.warning(f"Retrying after exception: {e}")
                 else:
                     raise  # If all retries failed, raise the exception
@@ -161,6 +190,34 @@ def test_fault_external_api():
         from flask import current_app
 
         current_app.logger.error(msg)
+
+    except Exception as e:
+        # General exception handling
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": str(e),
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=unhandled_exception latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        from flask import current_app
+
+        current_app.logger.error(msg)
+
+    finally:
+        if result["status"] == "error" and result["error_code"] == error_code:
+            if failure_count >= failure_threshold:
+                circuit_open = True
+                circuit_open_time = time.time()
+                from flask import current_app
+
+                current_app.logger.warning("Circuit breaker opened")
+
 
     return render_template(
         "page/test_fault.html",
