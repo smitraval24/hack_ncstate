@@ -42,7 +42,7 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        db.session.execute(text("SELECT FROM"))
+        db.session.execute(text("SELECT 1"))
     except Exception as e:
         result = {"status": "error", "error_code": error_code}
 
