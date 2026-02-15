@@ -59,6 +59,10 @@ def create_app(settings_override=None):
     app.register_blueprint(developer)
     app.register_blueprint(incident_bp)
 
+    @app.route("/health")
+    def health():
+        return "OK", 200
+
     extensions(app)
     register_cli(app)
     configure_logging(app)
