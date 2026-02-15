@@ -1,4 +1,8 @@
+import logging
+
 import click
+import watchtower
+import boto3
 from celery import Celery, Task
 from flask import Flask
 from werkzeug.debug import DebuggedApplication
@@ -52,14 +56,12 @@ def create_app(settings_override=None):
 
     app.register_blueprint(up)
     app.register_blueprint(page)
-<<<<<<< HEAD
     app.register_blueprint(developer)
-=======
     app.register_blueprint(incident_bp)
->>>>>>> 3959970 (implementing rag with backboard and adding knowledge base into rag)
 
     extensions(app)
     register_cli(app)
+    configure_cloudwatch_logging(app)
 
     return app
 
@@ -94,6 +96,60 @@ def extensions(app):
     flask_static_digest.init_app(app)
 
     return None
+
+
+def configure_cloudwatch_logging(app):
+    """
+    Attach an AWS CloudWatch Logs handler to the Flask app logger
+    and the root Python logger so that ERROR-level (and above) logs
+    are shipped to CloudWatch automatically.
+
+    Controlled by the CLOUDWATCH_ENABLED env-var / config flag.
+    When disabled no AWS calls are made, keeping local dev simple.
+
+    :param app: Flask application instance
+    :return: None
+    """
+    if not app.config.get("CLOUDWATCH_ENABLED"):
+        app.logger.debug("CloudWatch logging is disabled")
+        return
+
+    region = app.config.get("AWS_REGION", "us-east-1")
+    log_group = app.config.get("CLOUDWATCH_LOG_GROUP", "hello-app")
+    log_stream = app.config.get("CLOUDWATCH_LOG_STREAM", "error-logs")
+    log_level_name = app.config.get("CLOUDWATCH_LOG_LEVEL", "ERROR")
+    log_level = getattr(logging, log_level_name.upper(), logging.ERROR)
+
+    boto3_client = boto3.client("logs", region_name=region)
+
+    cw_handler = watchtower.CloudWatchLogHandler(
+        log_group_name=log_group,
+        log_stream_name=log_stream,
+        boto3_client=boto3_client,
+        send_interval=10,
+        create_log_group=True,
+        create_log_stream=True,
+    )
+
+    cw_handler.setLevel(log_level)
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(levelname)s in %(module)s: %(message)s"
+    )
+    cw_handler.setFormatter(formatter)
+
+    # Attach to the Flask app logger.
+    app.logger.addHandler(cw_handler)
+
+    # Also attach to the root logger so that library / module loggers
+    # (e.g. incident.analyzer, incident.rag_service) are captured too.
+    logging.getLogger().addHandler(cw_handler)
+
+    app.logger.info(
+        "CloudWatch logging enabled → group=%s stream=%s level=%s",
+        log_group,
+        log_stream,
+        log_level_name,
+    )
 
 
 def middleware(app):

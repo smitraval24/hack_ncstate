@@ -40,3 +40,12 @@ BACKBOARD_BASE_URL = os.getenv(
 )
 BACKBOARD_LLM_PROVIDER = os.getenv("BACKBOARD_LLM_PROVIDER", "openai")
 BACKBOARD_MODEL_NAME = os.getenv("BACKBOARD_MODEL_NAME", "gpt-4o")
+
+# AWS CloudWatch Logging.
+CLOUDWATCH_ENABLED = bool(strtobool(os.getenv("CLOUDWATCH_ENABLED", "false")))
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+CLOUDWATCH_LOG_GROUP = os.getenv("CLOUDWATCH_LOG_GROUP", "hello-app")
+CLOUDWATCH_LOG_STREAM = os.getenv(
+    "CLOUDWATCH_LOG_STREAM", "error-logs"
+)
+CLOUDWATCH_LOG_LEVEL = os.getenv("CLOUDWATCH_LOG_LEVEL", "ERROR")

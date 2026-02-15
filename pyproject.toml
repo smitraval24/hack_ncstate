@@ -26,6 +26,8 @@ dependencies = [
   "sqlalchemy-utils==0.42.1",
   "werkzeug==3.1.5",
   "httpx==0.28.1",
+  "boto3>=1.35.0",
+  "watchtower>=3.3.0",
 ]
 
 [tool.ruff]
