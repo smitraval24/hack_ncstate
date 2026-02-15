@@ -393,16 +393,21 @@ def incidents_dashboard():
     """Main incidents dashboard page"""
     data_source = "mock"
     cloudwatch_error = None
+    cloudwatch_lookback_minutes: int | None = None
 
     incidents: list[dict]
     if CLOUDWATCH_ENABLED:
+        try:
+            cloudwatch_lookback_minutes = int(os.getenv("CLOUDWATCH_LOOKBACK_MINUTES", "120"))
+        except Exception:
+            cloudwatch_lookback_minutes = None
         cw_incidents, cloudwatch_error = get_cloudwatch_incidents()
-        if cw_incidents:
-            incidents = cw_incidents
-            data_source = "cloudwatch"
-        else:
+        if cloudwatch_error:
             incidents = get_mock_incidents()
             data_source = "mock"
+        else:
+            incidents = cw_incidents
+            data_source = "cloudwatch"
     else:
         incidents = get_mock_incidents()
 
@@ -433,6 +438,7 @@ def incidents_dashboard():
         metrics=metrics,
         data_source=data_source,
         cloudwatch_error=cloudwatch_error,
+        cloudwatch_lookback_minutes=cloudwatch_lookback_minutes,
         type_counts=type_counts,
     )
 
@@ -442,8 +448,8 @@ def incident_detail(incident_id):
     """Incident detail page"""
     incidents: list[dict]
     if CLOUDWATCH_ENABLED:
-        cw_incidents, _err = get_cloudwatch_incidents()
-        incidents = cw_incidents or get_mock_incidents()
+        cw_incidents, err = get_cloudwatch_incidents()
+        incidents = get_mock_incidents() if err else cw_incidents
     else:
         incidents = get_mock_incidents()
     incident = next((i for i in incidents if i["id"] == incident_id), None)

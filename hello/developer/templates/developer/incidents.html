@@ -36,6 +36,14 @@
                 </span>
               {% endif %}
             </div>
+
+            {% if data_source == 'cloudwatch' and (incidents|length) == 0 and not cloudwatch_error %}
+              <div class="mt-3 text-xs text-gray-600">
+                No FaultRouter incidents found in the last
+                <span class="font-semibold">{{ cloudwatch_lookback_minutes if cloudwatch_lookback_minutes is not none else 'configured' }}</span>
+                minutes. This usually means the Lambda didn’t run in that window (or it’s in a different region).
+              </div>
+            {% endif %}
           </div>
         </div>
       </div>

@@ -116,8 +116,53 @@ def fetch_recent_events(
     )
     client = boto3.client("logs", region_name=region, config=boto_config)
 
+    def _describe_recent_streams(
+        log_group_name: str,
+        *,
+        max_streams: int,
+    ) -> list[dict[str, Any]]:
+        resp = client.describe_log_streams(
+            logGroupName=log_group_name,
+            orderBy="LastEventTime",
+            descending=True,
+            limit=max_streams,
+        )
+        return resp.get("logStreams", []) or []
+
+    def _get_stream_events(
+        log_group_name: str,
+        log_stream_name: str,
+        *,
+        start_time_ms: int,
+        end_time_ms: int,
+        limit: int,
+    ) -> list[CloudWatchLogEvent]:
+        resp = client.get_log_events(
+            logGroupName=log_group_name,
+            logStreamName=log_stream_name,
+            startTime=start_time_ms,
+            endTime=end_time_ms,
+            startFromHead=False,
+            limit=limit,
+        )
+        out: list[CloudWatchLogEvent] = []
+        for e in resp.get("events", []) or []:
+            message = (e.get("message") or "").strip("\n")
+            if not message:
+                continue
+            out.append(
+                CloudWatchLogEvent(
+                    log_group=log_group_name,
+                    log_stream=log_stream_name,
+                    timestamp_ms=int(e.get("timestamp") or 0),
+                    message=message,
+                )
+            )
+        return out
+
     events: list[CloudWatchLogEvent] = []
     for group in log_groups:
+        group_events: list[CloudWatchLogEvent] = []
         next_token: str | None = None
         pages = 0
         while pages < max_pages_per_group:
@@ -136,15 +181,23 @@ def fetch_recent_events(
 
             try:
                 resp = client.filter_log_events(**params)
-            except (ClientError, BotoCoreError):
-                # Don’t take down the dashboard if AWS is unavailable.
-                break
+            except ClientError as e:
+                err = e.response.get("Error", {}) if hasattr(e, "response") else {}
+                code = err.get("Code") or "ClientError"
+                msg = err.get("Message") or str(e)
+                raise RuntimeError(
+                    f"CloudWatch Logs filter_log_events failed for {group}: {code}: {msg}"
+                ) from e
+            except BotoCoreError as e:
+                raise RuntimeError(
+                    f"CloudWatch Logs filter_log_events failed for {group}: {e}"
+                ) from e
 
             for e in resp.get("events", []) or []:
                 message = (e.get("message") or "").strip("\n")
                 if not message:
                     continue
-                events.append(
+                group_events.append(
                     CloudWatchLogEvent(
                         log_group=group,
                         log_stream=e.get("logStreamName") or "",
@@ -157,6 +210,46 @@ def fetch_recent_events(
             if not token or token == next_token:
                 break
             next_token = token
+
+        # If FilterLogEvents returns nothing, fall back to GetLogEvents on the newest streams.
+        # This helps when the filter index lags behind recent ingestions.
+        if not group_events:
+            try:
+                max_streams = int(os.getenv("CLOUDWATCH_MAX_STREAMS_PER_GROUP", "5"))
+            except Exception:
+                max_streams = 5
+            max_streams = max(1, min(max_streams, 20))
+
+            per_stream_limit = max(10, min(200, limit_per_group // max_streams or 50))
+
+            try:
+                streams = _describe_recent_streams(group, max_streams=max_streams)
+                for s in streams:
+                    stream_name = s.get("logStreamName")
+                    if not stream_name:
+                        continue
+                    group_events.extend(
+                        _get_stream_events(
+                            group,
+                            stream_name,
+                            start_time_ms=start_ms,
+                            end_time_ms=end_ms,
+                            limit=per_stream_limit,
+                        )
+                    )
+            except ClientError as e:
+                err = e.response.get("Error", {}) if hasattr(e, "response") else {}
+                code = err.get("Code") or "ClientError"
+                msg = err.get("Message") or str(e)
+                raise RuntimeError(
+                    f"CloudWatch Logs get_log_events fallback failed for {group}: {code}: {msg}"
+                ) from e
+            except BotoCoreError as e:
+                raise RuntimeError(
+                    f"CloudWatch Logs get_log_events fallback failed for {group}: {e}"
+                ) from e
+
+        events.extend(group_events)
 
     events.sort(key=lambda ev: ev.timestamp_ms, reverse=True)
     _cache_set(key, events, ttl_seconds=cache_ttl_seconds)
