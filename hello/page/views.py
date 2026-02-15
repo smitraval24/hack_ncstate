@@ -5,7 +5,7 @@ import logging
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, request
+from flask import Blueprint, render_template, request, current_app
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -76,19 +76,21 @@ def test_fault_external_api():
 
     start = time.time()
 
-    # Circuit breaker implementation
-    circuit_open = False
-    circuit_open_time = None
+    # Initialize circuit breaker variables in the application context if they don't exist
+    if not hasattr(current_app, 'circuit_open'):
+        current_app.circuit_open = False
+        current_app.circuit_open_time = None
+        current_app.failure_count = 0
+
     circuit_breaker_timeout = 60  # seconds
     failure_threshold = 3
-    failure_count = 0
 
     try:
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
         max_retries = 3
         retry_delay = 1  # seconds
 
-        if circuit_open and circuit_open_time and time.time() - circuit_open_time < circuit_breaker_timeout:
+        if current_app.circuit_open and current_app.circuit_open_time and time.time() - current_app.circuit_open_time < circuit_breaker_timeout:
             result = {
                 "status": "error",
                 "error_code": error_code,
@@ -121,10 +123,10 @@ def test_fault_external_api():
                     "latency": f"{latency:.2f}s",
                 }
                 # Reset failure count upon success
-                failure_count = 0
+                current_app.failure_count = 0
                 break  # If successful, break the retry loop
             except requests.exceptions.RequestException as e:
-                failure_count += 1
+                current_app.failure_count += 1
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
@@ -211,9 +213,9 @@ def test_fault_external_api():
 
     finally:
         if result["status"] == "error" and result["error_code"] == error_code:
-            if failure_count >= failure_threshold:
-                circuit_open = True
-                circuit_open_time = time.time()
+            if current_app.failure_count >= failure_threshold:
+                current_app.circuit_open = True
+                current_app.circuit_open_time = time.time()
                 from flask import current_app
 
                 current_app.logger.warning("Circuit breaker opened")
