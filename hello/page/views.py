@@ -225,5 +225,17 @@ def test_fault_db_timeout():
 
     start = time.time()
 
-    try:
-        db.session.execute(text("SELECT pg_sleep(5);\\\\\
+    # Simulate a database timeout by sleeping for 5 seconds
+    time.sleep(5)
+
+    latency = time.time() - start
+    result = {"status": "ok", "error_code": None, "latency": f"{latency:.2f}s"}
+
+    return render_template(
+        "page/test_fault.html",
+        flask_ver=version("flask"),
+        python_ver=os.environ["PYTHON_VERSION"],
+        debug=DEBUG,
+        enable_fault_injection=True,
+        result=result,
+    ), 200
