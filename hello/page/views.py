@@ -42,7 +42,8 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        db.session.execute(text("SELECT * FROM users"))
+        if ENABLE_FAULT_INJECTION:
+            db.session.execute(text("SELECT * FROM users"))
     except Exception as e:
         result = {"status": "error", "error_code": error_code}
 
@@ -239,7 +240,7 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        db.session.execute(text("SELECT pg_sleep(5);\"))
+        db.session.execute(text("SELECT pg_sleep(5);\\"))
         latency = time.time() - start
         result = {
             "status": "ok",
