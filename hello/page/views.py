@@ -266,7 +266,7 @@ def test_fault_db_timeout():
 
         from flask import current_app
 
-        current_app.logger.error(f"db_error={e!s}")
+        current_app.logger.error(msg)
 
     return render_template(
         "page/test_fault.html",
