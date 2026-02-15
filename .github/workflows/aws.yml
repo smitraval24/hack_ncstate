@@ -72,6 +72,20 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
+    - name: Build and push postgres image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        docker build -t $ECR_REGISTRY/hack-postgres:latest -f Dockerfile.postgres .
+        docker push $ECR_REGISTRY/hack-postgres:latest
+
+    - name: Build and push mock-api image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        docker build -t $ECR_REGISTRY/mock-api:latest -f Dockerfile.mock_api .
+        docker push $ECR_REGISTRY/mock-api:latest
+
     # Inject SECRET_KEY securely during render
     - name: Render ECS task definition with new image & secrets
       id: task-def
