@@ -1,9 +1,11 @@
+import click
 from celery import Celery, Task
 from flask import Flask
 from werkzeug.debug import DebuggedApplication
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from hello.extensions import db, debug_toolbar, flask_static_digest
+from hello.incident.views import incident_bp
 from hello.page.views import page
 from hello.up.views import up
 from hello.developer.views import developer
@@ -50,11 +52,34 @@ def create_app(settings_override=None):
 
     app.register_blueprint(up)
     app.register_blueprint(page)
+<<<<<<< HEAD
     app.register_blueprint(developer)
+=======
+    app.register_blueprint(incident_bp)
+>>>>>>> 3959970 (implementing rag with backboard and adding knowledge base into rag)
 
     extensions(app)
+    register_cli(app)
 
     return app
+
+
+def register_cli(app):
+    """Register custom Flask CLI commands."""
+
+    @app.cli.command("seed-kb")
+    def seed_kb_command():
+        """Seed the Backboard RAG knowledge base with 15 example incidents."""
+        from hello.incident.seed_knowledge_base import seed_knowledge_base
+
+        click.echo("Uploading 15 knowledge-base entries to Backboard …")
+        results = seed_knowledge_base()
+        ok = sum(1 for r in results if r.get("document_id"))
+        fail = len(results) - ok
+        click.echo(f"Done: {ok} uploaded, {fail} failed.")
+        for r in results:
+            status = r.get("document_id") or "FAILED"
+            click.echo(f"  {r['filename']}  →  {status}")
 
 
 def extensions(app):

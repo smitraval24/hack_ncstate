@@ -30,3 +30,13 @@ CELERY_CONFIG = {
     "result_backend": REDIS_URL,
     "include": [],
 }
+
+# Backboard RAG.
+BACKBOARD_API_KEY = os.getenv("BACKBOARD_API_KEY", "")
+BACKBOARD_ASSISTANT_ID = os.getenv("BACKBOARD_ASSISTANT_ID", "")
+BACKBOARD_THREAD_ID = os.getenv("BACKBOARD_THREAD_ID", "")
+BACKBOARD_BASE_URL = os.getenv(
+    "BACKBOARD_BASE_URL", "https://app.backboard.io/api"
+)
+BACKBOARD_LLM_PROVIDER = os.getenv("BACKBOARD_LLM_PROVIDER", "openai")
+BACKBOARD_MODEL_NAME = os.getenv("BACKBOARD_MODEL_NAME", "gpt-4o")

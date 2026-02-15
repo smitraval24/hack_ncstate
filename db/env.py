@@ -4,6 +4,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from hello.app import create_app
+from hello.incident.models import Incident  # noqa: F401 – for autogenerate
 
 # There's no access to current_app here so we must create our own app.
 app = create_app()

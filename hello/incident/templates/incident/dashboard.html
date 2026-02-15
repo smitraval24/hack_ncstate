@@ -1,0 +1,297 @@
+{% extends "layouts/index.html" %}
+
+{% block title %}Incident Dashboard – Self-Healing RAG{% endblock %}
+
+{% block body %}
+<div class="max-w-5xl mx-auto pt-8 pb-12 px-4" id="app">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold tracking-tight">Incident Dashboard</h1>
+      <p class="text-gray-500 text-sm mt-1">
+        Real-time self-healing pipeline &middot; Backboard.io RAG
+      </p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="sse-status" class="flex items-center gap-1.5 text-xs text-gray-400">
+        <span id="sse-dot" class="w-2 h-2 rounded-full bg-gray-300"></span>
+        <span id="sse-label">Connecting&hellip;</span>
+      </span>
+      <a href="/test-fault"
+         class="px-4 py-2 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 transition shadow-sm">
+        Inject Fault
+      </a>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="grid grid-cols-3 gap-4 mb-8">
+    {% set total = incidents | length %}
+    {% set resolved_count = incidents | selectattr('resolved') | list | length %}
+    {% set open_count = total - resolved_count %}
+    <div class="bg-white border rounded-xl p-5 text-center shadow-sm">
+      <p class="text-3xl font-bold" id="stat-total">{{ total }}</p>
+      <p class="text-gray-400 text-xs uppercase tracking-wide mt-1">Total</p>
+    </div>
+    <div class="bg-green-50 border border-green-200 rounded-xl p-5 text-center shadow-sm">
+      <p class="text-3xl font-bold text-green-600" id="stat-resolved">{{ resolved_count }}</p>
+      <p class="text-gray-400 text-xs uppercase tracking-wide mt-1">Resolved</p>
+    </div>
+    <div class="bg-red-50 border border-red-200 rounded-xl p-5 text-center shadow-sm">
+      <p class="text-3xl font-bold text-red-600" id="stat-open">{{ open_count }}</p>
+      <p class="text-gray-400 text-xs uppercase tracking-wide mt-1">Open</p>
+    </div>
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <!-- Activity log -->
+  <div class="mb-6">
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-lg font-semibold">Activity Log</h2>
+      <div id="activity-log-badge" class="hidden px-2 py-0.5 bg-blue-100 text-blue-700 text-xs font-medium rounded-full animate-pulse">
+        Live
+      </div>
+    </div>
+    <div id="activity-log" class="bg-gray-900 rounded-xl p-4 max-h-32 overflow-y-auto text-xs font-mono text-gray-300 space-y-1">
+      <div class="text-gray-500">Waiting for events&hellip;</div>
+    </div>
+  </div>
+
+  <!-- Incident list -->
+  <h2 class="text-lg font-semibold mb-3">Incidents</h2>
+  <div id="incident-list" class="space-y-4">
+    {% if incidents %}
+      {% for inc in incidents %}
+      <div class="incident-card border rounded-xl bg-white shadow-sm overflow-hidden transition-all duration-300"
+           id="incident-{{ inc.id }}" data-id="{{ inc.id }}" data-resolved="{{ inc.resolved | lower }}">
+        <div class="flex items-center justify-between px-5 py-3 border-b
+          {% if inc.resolved %}bg-green-50 border-green-200{% else %}bg-red-50 border-red-200{% endif %}">
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-sm font-bold">#{{ inc.id }}</span>
+            <span class="status-badge px-2 py-0.5 rounded-full text-xs font-semibold
+              {% if inc.resolved %}bg-green-200 text-green-800{% else %}bg-red-200 text-red-800{% endif %}">
+              {% if inc.resolved %}RESOLVED{% else %}OPEN{% endif %}
+            </span>
+            <span class="font-mono text-sm text-gray-600">{{ inc.error_code }}</span>
+          </div>
+          <span class="text-xs text-gray-400">{{ inc.detected_at.strftime('%b %d, %H:%M:%S') }}</span>
+        </div>
+        <div class="px-5 py-4 space-y-3 text-sm">
+          <div>
+            <span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Symptoms</span>
+            <p class="text-gray-800 mt-0.5">{{ inc.symptoms or '—' }}</p>
+          </div>
+          {% if inc.root_cause %}
+          <div class="root-cause-section">
+            <span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Root Cause (RAG)</span>
+            <pre class="text-gray-800 mt-1 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 text-xs font-mono border">{{ inc.root_cause }}</pre>
+          </div>
+          {% endif %}
+          {% if inc.remediation %}
+          <div class="remediation-section">
+            <span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Remediation</span>
+            <p class="text-gray-800 mt-0.5">{{ inc.remediation }}</p>
+          </div>
+          {% endif %}
+          {% if inc.verification %}
+          <div class="verification-section">
+            <span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Verification</span>
+            <p class="text-gray-800 mt-0.5">{{ inc.verification }}</p>
+          </div>
+          {% endif %}
+          <div class="flex gap-2 pt-1">
+            {% if not inc.resolved %}
+            <button onclick="reanalyze({{ inc.id }}, this)"
+                    class="analyze-btn px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition">
+              Re-analyze (RAG)
+            </button>
+            {% endif %}
+            <a href="/incidents/{{ inc.id }}"
+               class="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-200 transition">
+              View JSON
+            </a>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div id="empty-state" class="text-center py-20 text-gray-400">
+        <svg class="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <p class="text-lg font-medium">No incidents recorded yet</p>
+        <p class="text-sm mt-1">
+          Trigger one from <a href="/test-fault" class="underline text-red-500 hover:text-red-600">Fault Injection</a>
+          or wait for the AWS service to detect an error.
+        </p>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+(function () {
+  const list         = document.getElementById('incident-list');
+  const log          = document.getElementById('activity-log');
+  const logBadge     = document.getElementById('activity-log-badge');
+  const sseDot       = document.getElementById('sse-dot');
+  const sseLabel     = document.getElementById('sse-label');
+  const statTotal    = document.getElementById('stat-total');
+  const statResolved = document.getElementById('stat-resolved');
+  const statOpen     = document.getElementById('stat-open');
+  let logStarted = false;
+
+  /* -- helpers ----------------------------------------------------------- */
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  function toast(msg, color) {
+    const el = document.createElement('div');
+    el.className = 'pointer-events-auto px-4 py-3 rounded-lg shadow-lg text-sm font-semibold text-white transition-all duration-500';
+    el.style.backgroundColor = color;
+    el.textContent = msg;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => { el.style.opacity = '0'; }, 3500);
+    setTimeout(() => el.remove(), 4100);
+  }
+
+  function logEvent(msg) {
+    if (!logStarted) { log.innerHTML = ''; logStarted = true; logBadge.classList.remove('hidden'); }
+    const ts = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.textContent = '[' + ts + '] ' + msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function updateStats() {
+    const cards = document.querySelectorAll('.incident-card');
+    let total = cards.length, resolved = 0;
+    cards.forEach(function(c) { if (c.dataset.resolved === 'true') resolved++; });
+    statTotal.textContent = total;
+    statResolved.textContent = resolved;
+    statOpen.textContent = total - resolved;
+  }
+
+  function flashCard(id) {
+    const card = document.getElementById('incident-' + id);
+    if (!card) return;
+    card.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.5)';
+    setTimeout(function() { card.style.boxShadow = ''; }, 2000);
+  }
+
+  /* -- build card HTML --------------------------------------------------- */
+  function makeCard(inc) {
+    var hdrBg    = inc.resolved ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200';
+    var badgeCls = inc.resolved ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800';
+    var badge    = inc.resolved ? 'RESOLVED' : 'OPEN';
+    var dt       = new Date(inc.detected_at);
+    var ts       = dt.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ', ' + dt.toLocaleTimeString('en-US',{hour12:false});
+
+    var body = '<div><span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Symptoms</span>'
+             + '<p class="text-gray-800 mt-0.5">' + esc(inc.symptoms || '—') + '</p></div>';
+
+    if (inc.root_cause) {
+      body += '<div class="root-cause-section"><span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Root Cause (RAG)</span>'
+            + '<pre class="text-gray-800 mt-1 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 text-xs font-mono border">' + esc(inc.root_cause) + '</pre></div>';
+    }
+    if (inc.remediation) {
+      body += '<div class="remediation-section"><span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Remediation</span>'
+            + '<p class="text-gray-800 mt-0.5">' + esc(inc.remediation) + '</p></div>';
+    }
+    if (inc.verification) {
+      body += '<div class="verification-section"><span class="font-semibold text-gray-500 text-xs uppercase tracking-wide">Verification</span>'
+            + '<p class="text-gray-800 mt-0.5">' + esc(inc.verification) + '</p></div>';
+    }
+
+    var actions = '';
+    if (!inc.resolved) {
+      actions += '<button onclick="reanalyze(' + inc.id + ', this)" class="analyze-btn px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition">Re-analyze (RAG)</button>';
+    }
+    actions += '<a href="/incidents/' + inc.id + '" class="px-3 py-1.5 bg-gray-100 text-gray-600 text-xs font-semibold rounded-lg hover:bg-gray-200 transition">View JSON</a>';
+
+    return '<div class="incident-card border rounded-xl bg-white shadow-sm overflow-hidden transition-all duration-300"'
+         + ' id="incident-' + inc.id + '" data-id="' + inc.id + '" data-resolved="' + inc.resolved + '">'
+         + '<div class="flex items-center justify-between px-5 py-3 border-b ' + hdrBg + '">'
+         + '<div class="flex items-center gap-2">'
+         + '<span class="font-mono text-sm font-bold">#' + inc.id + '</span>'
+         + '<span class="status-badge px-2 py-0.5 rounded-full text-xs font-semibold ' + badgeCls + '">' + badge + '</span>'
+         + '<span class="font-mono text-sm text-gray-600">' + esc(inc.error_code) + '</span>'
+         + '</div>'
+         + '<span class="text-xs text-gray-400">' + ts + '</span>'
+         + '</div>'
+         + '<div class="px-5 py-4 space-y-3 text-sm">' + body
+         + '<div class="flex gap-2 pt-1">' + actions + '</div>'
+         + '</div></div>';
+  }
+
+  /* -- SSE event handler ------------------------------------------------- */
+  function handleEvent(data) {
+    var inc = data.incident;
+    if (!inc) return;
+    var existing = document.getElementById('incident-' + inc.id);
+    var empty = document.getElementById('empty-state');
+    if (empty) empty.remove();
+
+    if (data.type === 'created') {
+      if (!existing) list.insertAdjacentHTML('afterbegin', makeCard(inc));
+      toast('\u{1F6A8} Incident #' + inc.id + ' recorded', '#dc2626');
+      logEvent('NEW  #' + inc.id + ' ' + inc.error_code + ' \u2014 ' + (inc.symptoms || ''));
+    }
+    else if (data.type === 'analyzed') {
+      if (existing) existing.outerHTML = makeCard(inc);
+      toast('\u{1F50D} Incident #' + inc.id + ' analyzed', '#2563eb');
+      logEvent('RAG  #' + inc.id + ' analysis complete');
+    }
+    else if (data.type === 'resolved') {
+      if (existing) existing.outerHTML = makeCard(inc);
+      else list.insertAdjacentHTML('afterbegin', makeCard(inc));
+      toast('\u2705 Incident #' + inc.id + ' resolved', '#16a34a');
+      logEvent('DONE #' + inc.id + ' resolved \u2014 ' + (inc.root_cause || '').substring(0, 80));
+    }
+
+    flashCard(inc.id);
+    updateStats();
+  }
+
+  /* -- SSE connection ---------------------------------------------------- */
+  var evtSource = new EventSource('/incidents/stream');
+
+  evtSource.onopen = function () {
+    sseDot.className = 'w-2 h-2 rounded-full bg-green-500 animate-pulse';
+    sseLabel.textContent = 'Connected';
+    logEvent('SSE connected \u2014 waiting for events');
+  };
+
+  evtSource.onmessage = function (e) {
+    try { handleEvent(JSON.parse(e.data)); }
+    catch (err) { console.warn('SSE parse error', err); }
+  };
+
+  evtSource.onerror = function () {
+    sseDot.className = 'w-2 h-2 rounded-full bg-yellow-500 animate-pulse';
+    sseLabel.textContent = 'Reconnecting\u2026';
+  };
+})();
+
+/* -- Re-analyze (global) ------------------------------------------------- */
+async function reanalyze(id, btn) {
+  if (!confirm('Re-run RAG analysis on incident #' + id + '?')) return;
+  btn.disabled = true;
+  btn.textContent = 'Analyzing\u2026';
+  var res = await fetch('/incidents/' + id + '/analyze', { method: 'POST' });
+  if (!res.ok) {
+    alert('Analysis failed \u2014 check server logs.');
+    btn.disabled = false;
+    btn.textContent = 'Re-analyze (RAG)';
+  }
+}
+</script>
+{% endblock %}
