@@ -1,11 +1,10 @@
 import os
 import sys
 import time
-import logging
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, request
+from flask import Blueprint, render_template
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -57,9 +56,6 @@ def test_fault_run():
             f"reason=invalid_sql_executed"
         )
         print(msg, file=sys.stderr)
-
-        gunicorn_logger = logging.getLogger("gunicorn.error")
-        gunicorn_logger.error(msg)
 
         from flask import current_app
 
@@ -201,12 +197,10 @@ def test_fault_db_timeout():
         )
         print(msg, file=sys.stderr)
 
-        gunicorn_logger = logging.getLogger("gunicorn.error")
-        gunicorn_logger.error(msg)
-
         from flask import current_app
 
         current_app.logger.error(f"db_error={e!s}")
+        current_app.logger.error(msg)
 
     return render_template(
         "page/test_fault.html",

@@ -40,3 +40,9 @@ BACKBOARD_BASE_URL = os.getenv(
 )
 BACKBOARD_LLM_PROVIDER = os.getenv("BACKBOARD_LLM_PROVIDER", "openai")
 BACKBOARD_MODEL_NAME = os.getenv("BACKBOARD_MODEL_NAME", "gpt-4o")
+
+# If true, the agent execute endpoint can auto-approve remediation execution
+# when "approve" is omitted from the request body.
+AGENT_AUTO_REMEDIATE = bool(
+    strtobool(os.getenv("AGENT_AUTO_REMEDIATE", "true"))
+)

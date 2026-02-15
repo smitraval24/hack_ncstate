@@ -38,6 +38,7 @@ from hello.incident.analyzer import (
     record_incident,
     resolve_incident,
 )
+from hello.incident.agent_workflow import approve_plan, build_agent_plan
 from hello.incident.models import Incident
 from hello.incident.rag_service import setup_assistant
 from hello.incident.seed_knowledge_base import seed_knowledge_base
@@ -184,6 +185,44 @@ def reanalyze_incident(incident_id: int):
     })
 
     return jsonify(incident.to_dict())
+
+
+@incident_bp.post("/<int:incident_id>/agent-plan")
+def build_plan(incident_id: int):
+    """Build an approval-gated agent remediation plan for an incident."""
+    incident = db.session.get(Incident, incident_id)
+    if incident is None:
+        return jsonify({"error": "not found"}), 404
+
+    plan = build_agent_plan(incident)
+    return jsonify(plan)
+
+
+@incident_bp.post("/<int:incident_id>/agent-execute")
+def execute_plan(incident_id: int):
+    """Approve and prepare execution payload for the selected playbook."""
+    incident = db.session.get(Incident, incident_id)
+    if incident is None:
+        return jsonify({"error": "not found"}), 404
+
+    data = request.get_json(force=True, silent=True) or {}
+    auto_approve = bool(
+        current_app.config.get("AGENT_AUTO_REMEDIATE", True)
+    )
+    approved = bool(data.get("approve", auto_approve))
+
+    plan = build_agent_plan(incident)
+    result = approve_plan(plan, approved=approved)
+
+    if result["status"] == "approved_for_pipeline":
+        incident.remediation = plan["selected_action"]["summary"]
+        if not incident.root_cause:
+            incident.root_cause = plan["evidence"].get("rag_summary")
+        db.session.add(incident)
+        db.session.commit()
+
+    status_code = 200 if result["status"] == "approved_for_pipeline" else 400
+    return jsonify(result), status_code
 
 
 @incident_bp.post("/<int:incident_id>/resolve")

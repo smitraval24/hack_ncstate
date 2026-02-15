@@ -3,8 +3,6 @@
 import json
 from unittest.mock import patch, MagicMock
 
-from flask import url_for
-
 from lib.test import ViewTestMixin
 from hello.incident.models import Incident
 
@@ -62,3 +60,71 @@ class TestIncidentViews(ViewTestMixin):
         response = self.client.get("/incidents/dashboard")
         assert response.status_code == 200
         assert b"Incident Dashboard" in response.data
+
+    def test_agent_plan_returns_playbook_for_known_fault(self):
+        incident = Incident(
+            error_code="FAULT_EXTERNAL_API_LATENCY",
+            symptoms="external timeout",
+            breadcrumbs=json.dumps(["external_api_call", "requests_timeout"]),
+            rag_response=json.dumps(
+                {
+                    "content": "timeout from upstream, add retry and fallback",
+                    "retrieved_memories": [{"id": "mem_1"}],
+                    "retrieved_files": ["kb_api_latency_001.txt"],
+                }
+            ),
+        )
+        self.session.add(incident)
+        self.session.flush()
+
+        response = self.client.post(f"/incidents/{incident.id}/agent-plan")
+        assert response.status_code == 200
+
+        payload = response.get_json()
+        assert payload["decision"] == "ready_for_approval"
+        assert (
+            payload["selected_action"]["action_id"]
+            == "fix_fault_external_api_latency"
+        )
+
+    def test_agent_execute_requires_approval(self):
+        incident = Incident(
+            error_code="FAULT_SQL_INJECTION_TEST",
+            symptoms="syntax error",
+            rag_response=json.dumps({"content": "invalid sql rollback needed"}),
+        )
+        self.session.add(incident)
+        self.session.flush()
+
+        response = self.client.post(
+            f"/incidents/{incident.id}/agent-execute",
+            data=json.dumps({"approve": False}),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        assert response.get_json()["status"] == "approval_required"
+
+    def test_agent_execute_returns_pipeline_payload_on_approval(self):
+        incident = Incident(
+            error_code="FAULT_DB_TIMEOUT",
+            symptoms="db timeout",
+            rag_response=json.dumps(
+                {
+                    "content": "queuepool limit reached during pg_sleep",
+                    "retrieved_memories": [{"id": "mem_1"}],
+                }
+            ),
+        )
+        self.session.add(incident)
+        self.session.flush()
+
+        response = self.client.post(
+            f"/incidents/{incident.id}/agent-execute",
+            data=json.dumps({"approve": True}),
+            content_type="application/json",
+        )
+        assert response.status_code == 200
+
+        payload = response.get_json()
+        assert payload["status"] == "approved_for_pipeline"
+        assert payload["execution"]["action_id"] == "fix_fault_db_timeout"

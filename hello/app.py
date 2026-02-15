@@ -5,6 +5,7 @@ from werkzeug.debug import DebuggedApplication
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from hello.extensions import db, debug_toolbar, flask_static_digest
+from hello.incident.log_autofix import register_fault_log_autofix
 from hello.incident.views import incident_bp
 from hello.page.views import page
 from hello.up.views import up
@@ -52,13 +53,11 @@ def create_app(settings_override=None):
 
     app.register_blueprint(up)
     app.register_blueprint(page)
-<<<<<<< HEAD
     app.register_blueprint(developer)
-=======
     app.register_blueprint(incident_bp)
->>>>>>> 3959970 (implementing rag with backboard and adding knowledge base into rag)
 
     extensions(app)
+    register_fault_log_autofix(app)
     register_cli(app)
 
     return app
