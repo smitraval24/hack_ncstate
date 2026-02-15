@@ -77,7 +77,8 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        r = requests.get("http://mock_api:5001/data", timeout=3)
+        mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
+        r = requests.get(f"{mock_api_base}/data", timeout=3)
         latency = time.time() - start
 
         from flask import current_app
