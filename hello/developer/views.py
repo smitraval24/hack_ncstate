@@ -1,5 +1,15 @@
+import os
 from datetime import datetime, timedelta
+
 from flask import Blueprint, render_template
+
+from config.settings import CLOUDWATCH_ENABLED
+from hello.aws.cloudwatch_logs import (
+    build_fault_router_incidents,
+    build_incidents_from_events,
+    fetch_recent_events,
+    get_cloudwatch_log_groups,
+)
 
 developer = Blueprint("developer", __name__, template_folder="templates")
 
@@ -293,31 +303,76 @@ def get_mock_incidents():
     return incidents
 
 
-def get_dashboard_metrics():
-    """Calculate dashboard summary metrics from mock data"""
-    incidents = get_mock_incidents()
+def get_cloudwatch_incidents() -> tuple[list[dict], str | None]:
+    """Fetch incidents derived from CloudWatch Logs.
+
+    Returns (incidents, error_message). If CloudWatch is not configured or
+    errors occur, incidents will be empty and error_message will describe why.
+    """
+    # User requirement: default to FaultRouter Lambda log group.
+    log_groups = get_cloudwatch_log_groups() or ["/aws/lambda/FaultRouter"]
+    if not log_groups:
+        return [], "CLOUDWATCH_LOG_GROUPS not configured"
+
+    try:
+        # Leave unset by default to avoid missing non-FAULT errors (e.g. DASHBOARD failures).
+        filter_pattern = os.getenv("CLOUDWATCH_FILTER_PATTERN")
+        lookback_minutes = int(os.getenv("CLOUDWATCH_LOOKBACK_MINUTES", "120"))
+        limit_per_group = int(os.getenv("CLOUDWATCH_LIMIT_PER_GROUP", "200"))
+
+        events = fetch_recent_events(
+            log_groups=log_groups,
+            lookback=timedelta(minutes=lookback_minutes),
+            filter_pattern=filter_pattern,
+            limit_per_group=limit_per_group,
+        )
+        only_fault_codes = os.getenv("CLOUDWATCH_ONLY_FAULT_CODES", "true").lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        )
+
+        if only_fault_codes and log_groups == ["/aws/lambda/FaultRouter"]:
+            incidents = build_fault_router_incidents(events)
+        else:
+            incidents = build_incidents_from_events(events)
+        return incidents, None
+    except Exception as e:
+        return [], f"CloudWatch fetch failed: {e}"
+
+
+def get_dashboard_metrics(incidents: list[dict] | None = None):
+    """Calculate dashboard summary metrics from provided incident list."""
+    if incidents is None:
+        incidents = get_mock_incidents()
     now = datetime.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Count incidents by status
-    active_count = len([i for i in incidents if i["status"] in ["detected", "in_progress"]])
-    resolved_count = len([i for i in incidents if i["status"] == "resolved"])
+    active_count = len(
+        [i for i in incidents if i.get("status") in ["detected", "in_progress"]]
+    )
+    resolved_count = len([i for i in incidents if i.get("status") == "resolved"])
     resolved_today_count = len([
         i for i in incidents
-        if i["status"] == "resolved"
-        and i["timestamp_resolved"]
+        if i.get("status") == "resolved"
+        and i.get("timestamp_resolved")
         and i["timestamp_resolved"] >= today_start
     ])
 
     # Calculate auto-resolution rate
-    resolved_incidents = [i for i in incidents if i["status"] == "resolved"]
-    auto_resolved_count = len([i for i in resolved_incidents if i["verification"]["success"]])
+    resolved_incidents = [i for i in incidents if i.get("status") == "resolved"]
+    auto_resolved_count = len(
+        [i for i in resolved_incidents if (i.get("verification") or {}).get("success")]
+    )
     auto_resolution_rate = (auto_resolved_count / len(resolved_incidents) * 100) if resolved_incidents else 0
 
     # Calculate MTTR (Mean Time To Remediate)
     resolution_times = []
     for incident in resolved_incidents:
-        if incident["timestamp_resolved"]:
+        if incident.get("timestamp_resolved"):
             delta = incident["timestamp_resolved"] - incident["timestamp_opened"]
             resolution_times.append(delta.total_seconds() / 60)  # minutes
 
@@ -336,20 +391,61 @@ def get_dashboard_metrics():
 @developer.get("/developer/incidents")
 def incidents_dashboard():
     """Main incidents dashboard page"""
-    incidents = get_mock_incidents()
-    metrics = get_dashboard_metrics()
+    data_source = "mock"
+    cloudwatch_error = None
+
+    incidents: list[dict]
+    if CLOUDWATCH_ENABLED:
+        cw_incidents, cloudwatch_error = get_cloudwatch_incidents()
+        if cw_incidents:
+            incidents = cw_incidents
+            data_source = "cloudwatch"
+        else:
+            incidents = get_mock_incidents()
+            data_source = "mock"
+    else:
+        incidents = get_mock_incidents()
+
+    metrics = get_dashboard_metrics(incidents)
+
+    # Drive the "Incident Types" chart from real data.
+    type_counts = {
+        "external_api": 0,
+        "db": 0,
+        "sql": 0,
+        "connection": 0,
+    }
+    for inc in incidents:
+        t = (inc.get("incident_type") or "").lower()
+        ec = (inc.get("error_code") or "").lower()
+        if "external api" in t or "external_api" in ec:
+            type_counts["external_api"] += 1
+        elif "database" in t or "db" in ec:
+            type_counts["db"] += 1
+        elif "sql" in t or "sql" in ec:
+            type_counts["sql"] += 1
+        else:
+            type_counts["connection"] += 1
 
     return render_template(
         "developer/incidents.html",
         incidents=incidents,
-        metrics=metrics
+        metrics=metrics,
+        data_source=data_source,
+        cloudwatch_error=cloudwatch_error,
+        type_counts=type_counts,
     )
 
 
 @developer.get("/developer/incidents/<incident_id>")
 def incident_detail(incident_id):
     """Incident detail page"""
-    incidents = get_mock_incidents()
+    incidents: list[dict]
+    if CLOUDWATCH_ENABLED:
+        cw_incidents, _err = get_cloudwatch_incidents()
+        incidents = cw_incidents or get_mock_incidents()
+    else:
+        incidents = get_mock_incidents()
     incident = next((i for i in incidents if i["id"] == incident_id), None)
 
     if not incident:

@@ -42,8 +42,15 @@ BACKBOARD_MODEL_NAME = os.getenv("BACKBOARD_MODEL_NAME", "gpt-4o")
 # AWS CloudWatch Logging.
 CLOUDWATCH_ENABLED = bool(strtobool(os.getenv("CLOUDWATCH_ENABLED", "false")))
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-CLOUDWATCH_LOG_GROUP = os.getenv("CLOUDWATCH_LOG_GROUP", "hello-app")
+CLOUDWATCH_LOG_GROUP = os.getenv("CLOUDWATCH_LOG_GROUP", "/aws/lambda/FaultRouter")
 CLOUDWATCH_LOG_STREAM = os.getenv(
     "CLOUDWATCH_LOG_STREAM", "error-logs"
 )
 CLOUDWATCH_LOG_LEVEL = os.getenv("CLOUDWATCH_LOG_LEVEL", "ERROR")
+
+# AWS CloudWatch (reading) configuration for the developer dashboard.
+# Prefer CLOUDWATCH_LOG_GROUPS, but keep CLOUDWATCH_LOG_GROUP for backwards compatibility.
+CLOUDWATCH_LOG_GROUPS = os.getenv("CLOUDWATCH_LOG_GROUPS", "")
+CLOUDWATCH_FILTER_PATTERN = os.getenv("CLOUDWATCH_FILTER_PATTERN", "")
+CLOUDWATCH_LOOKBACK_MINUTES = int(os.getenv("CLOUDWATCH_LOOKBACK_MINUTES", "120"))
+CLOUDWATCH_LIMIT_PER_GROUP = int(os.getenv("CLOUDWATCH_LIMIT_PER_GROUP", "200"))
