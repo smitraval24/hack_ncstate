@@ -6,6 +6,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from hello.extensions import db, debug_toolbar, flask_static_digest
 from hello.page.views import page
 from hello.up.views import up
+from hello.developer.views import developer
 
 
 def create_celery_app(app=None):
@@ -49,6 +50,7 @@ def create_app(settings_override=None):
 
     app.register_blueprint(up)
     app.register_blueprint(page)
+    app.register_blueprint(developer)
 
     extensions(app)
 
