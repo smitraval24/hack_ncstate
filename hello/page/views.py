@@ -27,9 +27,6 @@ def home():
 
 @page.get("/test-fault")
 def test_fault():
-    if not ENABLE_FAULT_INJECTION:
-        return "", 404
-
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
@@ -41,9 +38,6 @@ def test_fault():
 
 @page.post("/test-fault/run")
 def test_fault_run():
-    if not ENABLE_FAULT_INJECTION:
-        return "", 404
-
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
@@ -77,9 +71,6 @@ def test_fault_run():
 
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
-    if not ENABLE_FAULT_INJECTION:
-        return "", 404
-
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
@@ -170,9 +161,6 @@ def test_fault_external_api():
 
 @page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
-    if not ENABLE_FAULT_INJECTION:
-        return "", 404
-
     error_code = "FAULT_DB_TIMEOUT"
     result = {"status": "ok", "error_code": None}
 
