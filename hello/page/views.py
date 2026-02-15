@@ -78,20 +78,32 @@ def test_fault_external_api():
 
     try:
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        r = requests.get(f"{mock_api_base}/data", timeout=3)
-        latency = time.time() - start
+        max_retries = 3
+        retry_delay = 1  # seconds
+        for attempt in range(max_retries):
+            try:
+                r = requests.get(f"{mock_api_base}/data", timeout=3)
+                latency = time.time() - start
 
-        from flask import current_app
+                from flask import current_app
 
-        current_app.logger.info(f"external_call_latency={latency:.2f}")
+                current_app.logger.info(f"external_call_latency={latency:.2f}")
 
-        r.raise_for_status()
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "data": r.json(),
-            "latency": f"{latency:.2f}s",
-        }
+                r.raise_for_status()
+                result = {
+                    "status": "ok",
+                    "error_code": None,
+                    "data": r.json(),
+                    "latency": f"{latency:.2f}s",
+                }
+                break  # If successful, break the retry loop
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    current_app.logger.warning(f"Retrying after exception: {e}")
+                else:
+                    raise  # If all retries failed, raise the exception
 
     except requests.exceptions.Timeout:
         latency = time.time() - start
