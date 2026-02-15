@@ -1,0 +1,91 @@
+{
+  "family": "hello-app-with-db-and-mock",
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "requiresCompatibilities": ["FARGATE"],
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/helloAppTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "web",
+      "image": "<YOUR_APP_IMAGE_ECR_URI>",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "POSTGRES_HOST", "value": "localhost" },
+        { "name": "POSTGRES_PORT", "value": "5432" },
+        { "name": "POSTGRES_USER", "value": "hello" },
+        { "name": "POSTGRES_PASSWORD", "value": "password" },
+        { "name": "POSTGRES_DB", "value": "hello" },
+        { "name": "MOCK_API_BASE_URL", "value": "http://localhost:5001" },
+        { "name": "NODE_ENV", "value": "production" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "hello-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "web"
+        }
+      }
+    },
+    {
+      "name": "postgres",
+      "image": "postgres:18.1-trixie",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 5432, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "POSTGRES_USER", "value": "hello" },
+        { "name": "POSTGRES_PASSWORD", "value": "password" },
+        { "name": "POSTGRES_DB", "value": "hello" }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "pgdata",
+          "containerPath": "/var/lib/postgresql"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "hello-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "postgres"
+        }
+      }
+    },
+    {
+      "name": "mock-api",
+      "image": "<YOUR_MOCK_API_ECR_URI>",
+      "essential": false,
+      "portMappings": [
+        { "containerPort": 5001, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "API_FAULT_MODE", "value": "latency,error" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "hello-app",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "mock-api"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "pgdata",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<YOUR_EFS_FILESYSTEM_ID>",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

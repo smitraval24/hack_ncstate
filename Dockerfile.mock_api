@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy the mock API source
+COPY mock_api.py /app/
+
+# Install dependencies
+RUN pip install --no-cache-dir flask
+
+# Default fault mode; you can override via env in AWS
+ENV API_FAULT_MODE=latency,error
+
+EXPOSE 5001
+
+CMD ["python", "mock_api.py"]
