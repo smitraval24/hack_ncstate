@@ -1,8 +1,8 @@
 import logging
+import os
+import sys
 
 import click
-import watchtower
-import boto3
 from celery import Celery, Task
 from flask import Flask
 from werkzeug.debug import DebuggedApplication
@@ -61,9 +61,56 @@ def create_app(settings_override=None):
 
     extensions(app)
     register_cli(app)
-    configure_cloudwatch_logging(app)
+    configure_logging(app)
 
     return app
+
+
+def configure_logging(app: Flask) -> None:
+    """Configure application logging to stdout/stderr.
+
+    ECS (awslogs) ships container stdout/stderr to CloudWatch (e.g.
+    /ecs/cream-task). To avoid double-shipping and remove the need for
+    direct CloudWatch SDK logging, this app always logs to stdio.
+    """
+    level_name = os.getenv("LOG_LEVEL") or os.getenv("FLASK_LOG_LEVEL")
+    level_name = (level_name or ("DEBUG" if app.debug else "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+    )
+
+    class _MaxLevelFilter(logging.Filter):
+        def __init__(self, max_level: int) -> None:
+            super().__init__()
+            self._max_level = max_level
+
+        def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+            return record.levelno <= self._max_level
+
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(level)
+    stdout_handler.setFormatter(formatter)
+    stdout_handler.addFilter(_MaxLevelFilter(logging.WARNING))
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.ERROR)
+    stderr_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    if not root.handlers:
+        root.addHandler(stdout_handler)
+        root.addHandler(stderr_handler)
+
+    app.logger.setLevel(level)
+    if not app.logger.handlers:
+        app.logger.addHandler(stdout_handler)
+        app.logger.addHandler(stderr_handler)
+    app.logger.propagate = False
+
+    app.logger.info("Console logging enabled level=%s", level_name)
 
 
 def register_cli(app):
@@ -99,56 +146,13 @@ def extensions(app):
 
 
 def configure_cloudwatch_logging(app):
+    """Deprecated: direct CloudWatch shipping is disabled.
+
+    ECS already ships stdout/stderr to CloudWatch (/ecs/cream-task).
+    This function remains for backwards compatibility but is a no-op.
     """
-    Attach an AWS CloudWatch Logs handler to the Flask app logger
-    and the root Python logger so that ERROR-level (and above) logs
-    are shipped to CloudWatch automatically.
-
-    Controlled by the CLOUDWATCH_ENABLED env-var / config flag.
-    When disabled no AWS calls are made, keeping local dev simple.
-
-    :param app: Flask application instance
-    :return: None
-    """
-    if not app.config.get("CLOUDWATCH_ENABLED"):
-        app.logger.debug("CloudWatch logging is disabled")
-        return
-
-    region = app.config.get("AWS_REGION", "us-east-1")
-    log_group = app.config.get("CLOUDWATCH_LOG_GROUP", "hello-app")
-    log_stream = app.config.get("CLOUDWATCH_LOG_STREAM", "error-logs")
-    log_level_name = app.config.get("CLOUDWATCH_LOG_LEVEL", "ERROR")
-    log_level = getattr(logging, log_level_name.upper(), logging.ERROR)
-
-    boto3_client = boto3.client("logs", region_name=region)
-
-    cw_handler = watchtower.CloudWatchLogHandler(
-        log_group_name=log_group,
-        log_stream_name=log_stream,
-        boto3_client=boto3_client,
-        send_interval=10,
-        create_log_group=True,
-        create_log_stream=True,
-    )
-
-    cw_handler.setLevel(log_level)
-    formatter = logging.Formatter(
-        "[%(asctime)s] %(levelname)s in %(module)s: %(message)s"
-    )
-    cw_handler.setFormatter(formatter)
-
-    # Attach to the Flask app logger.
-    app.logger.addHandler(cw_handler)
-
-    # Also attach to the root logger so that library / module loggers
-    # (e.g. incident.analyzer, incident.rag_service) are captured too.
-    logging.getLogger().addHandler(cw_handler)
-
-    app.logger.info(
-        "CloudWatch logging enabled → group=%s stream=%s level=%s",
-        log_group,
-        log_stream,
-        log_level_name,
+    app.logger.debug(
+        "Direct CloudWatch logging is disabled; using console logging"
     )
 
 

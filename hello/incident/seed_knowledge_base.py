@@ -240,7 +240,7 @@ KB_ENTRIES: list[dict] = [
             "instance's CPU was consumed scheduling and maintaining those "
             "backends.\n"
             "Remediation: Moved the fault endpoint behind a feature flag "
-            "that is off by default (ENABLE_FAULT_INJECTION=false). Added "
+            "that is enabled by default. Added "
             "server-side rate limiting (5 req/min). Configured RDS "
             "statement_timeout=3000.\n"
             "Verification: CPU stayed below 30 % during controlled fault "
