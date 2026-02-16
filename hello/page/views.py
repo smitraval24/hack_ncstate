@@ -41,7 +41,7 @@ def test_fault_run():
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
-    if ENABLE_FAULT_INJECTION:
+    if False: # ENABLE_FAULT_INJECTION:
         result = {"status": "ok", "error_code": None}
     else:
         result = {"status": "ok", "error_code": None}
