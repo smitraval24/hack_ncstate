@@ -43,10 +43,19 @@ def test_fault_run():
 
     if ENABLE_FAULT_INJECTION:
         user_input = request.form.get('user_input', '')
-        # Vulnerable SQL query:
-        # query = "SELECT * FROM users WHERE username = '" + user_input + "'"
-        # The above query is vulnerable to SQL injection.
-        result = {"status": "error", "error_code": error_code}
+        if user_input:
+            try:
+                # Use parameterized query to prevent SQL injection
+                query = text("SELECT * FROM users WHERE username = :username")
+                db.session.execute(query, {"username": user_input})
+                db.session.commit()  # Commit the transaction
+                result = {"status": "ok", "error_code": None}
+            except Exception as e:
+                current_app.logger.error(f"SQL error: {e}")
+                result = {"status": "error", "error_code": error_code}
+
+        else:
+            result = {"status": "error", "error_code": error_code}
     else:
         result = {"status": "ok", "error_code": None}
 
