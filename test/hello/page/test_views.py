@@ -12,3 +12,5 @@ class TestPage(ViewTestMixin):
         response = self.client.get(url_for("page.home"))
 
         assert response.status_code == 200
+        assert b"Autonomous Recovery System" in response.data
+        assert b"From fault signal to production fix, automatically." in response.data

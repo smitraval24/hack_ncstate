@@ -1,26 +1,997 @@
-<!-- This template shows the home page for the page part of the app. -->
-
 {% extends "layouts/index.html" %}
 
-{% block title %}Docker + Flask{% endblock %}
+{% block title %}Autonomous Recovery System{% endblock %}
+
+{% block meta_description %}Autonomous Recovery System detects production faults, plans remediations with RAG, generates patches, and redeploys fixes to AWS automatically.{% endblock %}
+
+{% block body_class %}page-home{% endblock %}
+
+{% block main_class %}site-main--home{% endblock %}
+
+{% block head %}
+  <style>
+    .page-home {
+      background:
+        radial-gradient(circle at 10% 0%, rgba(77, 124, 255, 0.24), transparent 24%),
+        radial-gradient(circle at 85% 12%, rgba(31, 217, 187, 0.16), transparent 26%),
+        linear-gradient(180deg, #0a1020 0%, #0d1530 48%, #09111f 100%);
+      color: #eef3ff;
+      overflow-x: hidden;
+    }
+
+    .page-home .site-header {
+      background: rgba(7, 12, 25, 0.56);
+      border-bottom-color: rgba(149, 167, 255, 0.12);
+    }
+
+    .page-home .site-brand__title,
+    .page-home .site-brand,
+    .page-home .site-nav__link {
+      color: #eef3ff;
+    }
+
+    .page-home .site-brand__meta {
+      color: rgba(216, 227, 255, 0.72);
+    }
+
+    .page-home .site-nav__link {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(149, 167, 255, 0.14);
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.18);
+    }
+
+    .page-home .site-nav__link--primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, #2d7dff, #11d2bd);
+      color: white;
+    }
+
+    .page-home .site-main--home {
+      width: 100%;
+      max-width: none;
+      margin: 0;
+    }
+
+    .home-shell {
+      position: relative;
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 38px 0 96px;
+    }
+
+    .home-shell::before,
+    .home-shell::after {
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(20px);
+      opacity: 0.34;
+      pointer-events: none;
+    }
+
+    .home-shell::before {
+      top: 90px;
+      right: 8%;
+      width: 220px;
+      height: 220px;
+      background: rgba(65, 108, 255, 0.24);
+    }
+
+    .home-shell::after {
+      left: -60px;
+      top: 520px;
+      width: 180px;
+      height: 180px;
+      background: rgba(17, 210, 189, 0.15);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+      gap: 34px;
+      align-items: center;
+      padding: 46px 0 34px;
+    }
+
+    .hero__eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(109, 132, 255, 0.22);
+      background: rgba(11, 17, 34, 0.65);
+      color: #9cb5ff;
+      font-size: 0.84rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .hero__eyebrow::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #45dcff, #11d2bd);
+      box-shadow: 0 0 18px rgba(69, 220, 255, 0.8);
+    }
+
+    .hero__title {
+      margin-top: 22px;
+      font-size: clamp(3rem, 6vw, 5.6rem);
+      line-height: 0.96;
+      letter-spacing: -0.05em;
+      max-width: 11ch;
+    }
+
+    .hero__body {
+      margin-top: 20px;
+      max-width: 620px;
+      color: rgba(223, 232, 255, 0.8);
+      font-size: 1.12rem;
+      line-height: 1.8;
+    }
+
+    .hero__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .hero__action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 50px;
+      padding: 0 18px;
+      border-radius: 999px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+    }
+
+    .hero__action--primary {
+      background: linear-gradient(135deg, #2977ff, #11d2bd);
+      color: white;
+      box-shadow: 0 20px 44px rgba(18, 103, 255, 0.35);
+    }
+
+    .hero__action--secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(149, 167, 255, 0.16);
+      color: #e9efff;
+    }
+
+    .hero__action:hover {
+      transform: translateY(-2px);
+    }
+
+    .hero__stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 34px;
+      max-width: 760px;
+    }
+
+    .hero__stat {
+      padding: 18px 18px 16px;
+      border-radius: 24px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: linear-gradient(180deg, rgba(18, 28, 53, 0.94), rgba(10, 16, 31, 0.88));
+      box-shadow: 0 20px 40px rgba(2, 6, 23, 0.24);
+    }
+
+    .hero__stat-value {
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-size: 1.9rem;
+      font-weight: 700;
+      color: white;
+    }
+
+    .hero__stat-label {
+      margin-top: 6px;
+      color: rgba(215, 225, 255, 0.68);
+      font-size: 0.95rem;
+      line-height: 1.5;
+    }
+
+    .signal-panel {
+      position: relative;
+      overflow: hidden;
+      padding: 28px;
+      border-radius: 32px;
+      border: 1px solid rgba(149, 167, 255, 0.14);
+      background:
+        linear-gradient(180deg, rgba(20, 30, 58, 0.96), rgba(10, 17, 32, 0.92));
+      box-shadow: 0 32px 70px rgba(2, 6, 23, 0.32);
+      min-height: 520px;
+    }
+
+    .signal-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(120deg, transparent 15%, rgba(108, 131, 255, 0.08) 50%, transparent 80%);
+      transform: translateX(-100%);
+      animation: panel-shine 7s linear infinite;
+    }
+
+    .signal-panel__top {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 26px;
+    }
+
+    .signal-panel__label {
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #8eabff;
+    }
+
+    .signal-panel__status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(17, 210, 189, 0.09);
+      color: #8ef5dc;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .signal-panel__status::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #11d2bd;
+      box-shadow: 0 0 0 0 rgba(17, 210, 189, 0.5);
+      animation: pulse-dot 2.2s infinite;
+    }
+
+    .signal-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 16px;
+    }
+
+    .signal-card {
+      display: grid;
+      gap: 10px;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: rgba(10, 15, 29, 0.78);
+      transform: translateY(0);
+      animation: float-card 6.4s ease-in-out infinite;
+    }
+
+    .signal-card:nth-child(2) {
+      animation-delay: 0.7s;
+    }
+
+    .signal-card:nth-child(3) {
+      animation-delay: 1.4s;
+    }
+
+    .signal-card__heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      color: #eef3ff;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .signal-card__tag {
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: white;
+    }
+
+    .signal-card__tag--detect {
+      background: linear-gradient(135deg, #2977ff, #6e7cff);
+    }
+
+    .signal-card__tag--reason {
+      background: linear-gradient(135deg, #b14eff, #ff5b94);
+    }
+
+    .signal-card__tag--ship {
+      background: linear-gradient(135deg, #0cc5b3, #4ff2cd);
+      color: #08201d;
+    }
+
+    .signal-card__body {
+      color: rgba(218, 228, 255, 0.72);
+      font-size: 0.96rem;
+      line-height: 1.65;
+    }
+
+    .signal-card__line {
+      position: relative;
+      overflow: hidden;
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .signal-card__line::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      width: 64%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2977ff, #11d2bd);
+      animation: scan-line 3.2s ease-in-out infinite;
+    }
+
+    .signal-card__meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: rgba(178, 193, 235, 0.72);
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .section {
+      margin-top: 48px;
+    }
+
+    .section__intro {
+      max-width: 700px;
+      margin-bottom: 24px;
+    }
+
+    .section__eyebrow {
+      color: #87a5ff;
+      font-size: 0.86rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .section__title {
+      margin-top: 12px;
+      font-size: clamp(2rem, 3vw, 3.4rem);
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+      color: white;
+    }
+
+    .section__body {
+      margin-top: 14px;
+      color: rgba(220, 229, 255, 0.74);
+      font-size: 1.04rem;
+      line-height: 1.8;
+    }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .feature-card {
+      position: relative;
+      overflow: hidden;
+      padding: 24px;
+      border-radius: 28px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: linear-gradient(180deg, rgba(16, 24, 46, 0.96), rgba(8, 14, 27, 0.92));
+      box-shadow: 0 24px 44px rgba(2, 6, 23, 0.2);
+    }
+
+    .feature-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -20% -58% 55%;
+      height: 170px;
+      background: radial-gradient(circle, rgba(74, 122, 255, 0.24), transparent 68%);
+      pointer-events: none;
+    }
+
+    .feature-card__number {
+      display: inline-grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 16px;
+      background: rgba(84, 112, 255, 0.14);
+      color: #9cb5ff;
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .feature-card__title {
+      margin-top: 18px;
+      color: white;
+      font-size: 1.34rem;
+      font-weight: 700;
+    }
+
+    .feature-card__body {
+      margin-top: 10px;
+      color: rgba(221, 230, 255, 0.74);
+      line-height: 1.72;
+    }
+
+    .workflow-shell {
+      position: relative;
+      padding: 30px 0 10px;
+    }
+
+    .workflow-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .workflow-grid::before {
+      content: "";
+      position: absolute;
+      left: 4%;
+      right: 4%;
+      top: 96px;
+      height: 2px;
+      background:
+        linear-gradient(90deg,
+          rgba(68, 118, 255, 0.88),
+          rgba(255, 183, 76, 0.88),
+          rgba(233, 92, 255, 0.88),
+          rgba(17, 210, 189, 0.88));
+      opacity: 0.45;
+    }
+
+    .workflow-step {
+      position: relative;
+      min-height: 280px;
+      padding: 28px 20px 22px;
+      border-radius: 28px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background:
+        linear-gradient(180deg, rgba(15, 23, 43, 0.97), rgba(8, 14, 28, 0.94));
+      box-shadow: 0 24px 54px rgba(2, 6, 23, 0.22);
+    }
+
+    .workflow-step::before {
+      content: "";
+      position: absolute;
+      top: 84px;
+      left: 50%;
+      width: 14px;
+      height: 14px;
+      margin-left: -7px;
+      border-radius: 999px;
+      border: 3px solid rgba(255, 255, 255, 0.9);
+      background: var(--flow-color, #6d83ff);
+        box-shadow: 0 0 0 0 transparent;
+      animation: flow-pulse 2.8s infinite;
+      z-index: 2;
+    }
+
+    .workflow-step::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(160deg, rgba(255, 255, 255, 0.12), transparent 45%, var(--flow-color, #6d83ff));
+      -webkit-mask:
+        linear-gradient(#fff 0 0) content-box,
+        linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+      opacity: 0.8;
+    }
+
+    .workflow-step__kicker {
+      color: var(--flow-color, #98b3ff);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .workflow-step__title {
+      margin-top: 20px;
+      color: white;
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+
+    .workflow-step__body {
+      margin-top: 12px;
+      color: rgba(220, 229, 255, 0.72);
+      line-height: 1.7;
+      font-size: 0.98rem;
+    }
+
+    .workflow-step__footer {
+      position: absolute;
+      left: 20px;
+      right: 20px;
+      bottom: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: rgba(199, 211, 249, 0.72);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .workflow-step__signal {
+      position: relative;
+      width: 74px;
+      height: 9px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .workflow-step__signal::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      width: 52%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, transparent, var(--flow-color), transparent);
+      animation: scan-line 2.5s ease-in-out infinite;
+    }
+
+    .guardrail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .guardrail-card {
+      padding: 24px;
+      border-radius: 26px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: rgba(11, 17, 33, 0.82);
+    }
+
+    .guardrail-card__title {
+      color: white;
+      font-size: 1.16rem;
+      font-weight: 700;
+    }
+
+    .guardrail-card__body {
+      margin-top: 10px;
+      color: rgba(220, 229, 255, 0.72);
+      line-height: 1.7;
+    }
+
+    .page-home.js-motion [data-reveal] {
+      opacity: 0;
+      transform: translateY(26px);
+      transition:
+        opacity 700ms ease,
+        transform 700ms ease;
+      transition-delay: var(--reveal-delay, 0ms);
+    }
+
+    .page-home.js-motion [data-reveal].is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @keyframes float-card {
+      0%, 100% {
+        transform: translateY(0);
+      }
+      50% {
+        transform: translateY(-8px);
+      }
+    }
+
+    @keyframes panel-shine {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(120%);
+      }
+    }
+
+    @keyframes pulse-dot {
+      0% {
+        box-shadow: 0 0 0 0 rgba(17, 210, 189, 0.5);
+      }
+      70% {
+        box-shadow: 0 0 0 10px rgba(17, 210, 189, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(17, 210, 189, 0);
+      }
+    }
+
+    @keyframes scan-line {
+      0% {
+        transform: translateX(-100%);
+      }
+      50% {
+        transform: translateX(40%);
+      }
+      100% {
+        transform: translateX(180%);
+      }
+    }
+
+    @keyframes flow-pulse {
+      0% {
+        box-shadow: 0 0 0 0 transparent;
+        transform: scale(1);
+      }
+      70% {
+        box-shadow: 0 0 18px 2px var(--flow-color);
+        transform: scale(1.12);
+      }
+      100% {
+        box-shadow: 0 0 0 0 transparent;
+        transform: scale(1);
+      }
+    }
+
+    @media (max-width: 1180px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .workflow-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .workflow-grid::before {
+        top: 50%;
+      }
+    }
+
+      @media (max-width: 860px) {
+        .home-shell {
+          width: min(1240px, calc(100% - 24px));
+          padding-bottom: 72px;
+        }
+
+      .hero__stats,
+      .feature-grid,
+      .guardrail-grid,
+      .workflow-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .signal-panel {
+        min-height: auto;
+      }
+
+      .workflow-grid::before {
+        left: 16px;
+        right: auto;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        height: auto;
+      }
+
+      .workflow-step {
+        min-height: auto;
+        padding-bottom: 76px;
+      }
+
+      .workflow-step::before {
+        top: 34px;
+        left: 15px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .signal-panel::before,
+      .signal-card,
+      .signal-panel__status::before,
+      .signal-card__line::before,
+      .workflow-step::before,
+      .workflow-step__signal::before {
+        animation: none;
+      }
+
+      .page-home.js-motion [data-reveal] {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
+    }
+  </style>
+{% endblock %}
 
 {% block body %}
-  <div class="flex justify-center pt-24 pb-12 px-2 sm:px-0">
-    <img src="{{ static_url_for('static', filename='images/flask.png') }}"
-         width="480" height="188" alt="Flask logo" />
+  <div class="home-shell">
+    <section class="hero">
+      <div data-reveal style="--reveal-delay: 40ms;">
+        <span class="hero__eyebrow">Hack NC State 2026 - Self-healing AWS demo</span>
+        <h1 class="hero__title">From fault signal to production fix, automatically.</h1>
+        <p class="hero__body">
+          Autonomous Recovery System turns runtime failures into a guided recovery loop.
+          It listens to CloudWatch, extracts incident context, reasons over past failures
+          with RAG, generates a patch, ships it through GitHub, and lets CI/CD redeploy
+          the service back to ECS without waiting for a manual firefight.
+        </p>
+
+        <div class="hero__actions">
+          <a href="/developer/incidents" class="hero__action hero__action--primary">Explore incident center</a>
+          <a href="#workflow" class="hero__action hero__action--secondary">See the recovery flow</a>
+        </div>
+
+        <div class="hero__stats">
+          <div class="hero__stat" data-reveal style="--reveal-delay: 110ms;">
+            <div class="hero__stat-value">88%</div>
+            <div class="hero__stat-label">Faster demo recovery from trigger to healthy redeploy.</div>
+          </div>
+          <div class="hero__stat" data-reveal style="--reveal-delay: 160ms;">
+            <div class="hero__stat-value">6</div>
+            <div class="hero__stat-label">Connected stages from detection to redeployment on AWS.</div>
+          </div>
+          <div class="hero__stat" data-reveal style="--reveal-delay: 210ms;">
+            <div class="hero__stat-value">24/7</div>
+            <div class="hero__stat-label">Always-on recovery posture with auditability built into the loop.</div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="signal-panel" data-reveal style="--reveal-delay: 120ms;">
+        <div class="signal-panel__top">
+          <div>
+            <div class="signal-panel__label">Live recovery story</div>
+            <h2 class="section__title" style="margin-top: 8px; font-size: clamp(1.8rem, 3vw, 2.6rem);">What the system is doing behind the scenes</h2>
+          </div>
+          <div class="signal-panel__status">Autonomous loop active</div>
+        </div>
+
+        <div class="signal-grid">
+          <article class="signal-card">
+            <div class="signal-card__heading">
+              <span>1. Detect and route the incident</span>
+              <span class="signal-card__tag signal-card__tag--detect">Detect</span>
+            </div>
+            <p class="signal-card__body">
+              A production failure lands in CloudWatch. Fault Router packages the right logs,
+              metadata, and breadcrumbs instead of forcing a human to gather context by hand.
+            </p>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>CloudWatch</span>
+              <span>Lambda router</span>
+            </div>
+          </article>
+
+          <article class="signal-card">
+            <div class="signal-card__heading">
+              <span>2. Decide on a safe remediation</span>
+              <span class="signal-card__tag signal-card__tag--reason">Reason</span>
+            </div>
+            <p class="signal-card__body">
+              Backboard.io uses retrieval-augmented reasoning to match the failure against
+              prior incidents and known fixes, then turns that into a structured repair plan.
+            </p>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>RAG context</span>
+              <span>Action plan</span>
+            </div>
+          </article>
+
+          <article class="signal-card">
+            <div class="signal-card__heading">
+              <span>3. Patch and redeploy automatically</span>
+              <span class="signal-card__tag signal-card__tag--ship">Ship</span>
+            </div>
+            <p class="signal-card__body">
+              GitHub Tool converts the plan into code changes, commits the patch, and lets
+              GitHub Actions rebuild, push to ECR, and roll the fix back into ECS.
+            </p>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>GitHub + CI/CD</span>
+              <span>ECS healthy</span>
+            </div>
+          </article>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="section__intro" data-reveal>
+        <div class="section__eyebrow">Why this project exists</div>
+        <h2 class="section__title">Most systems detect incidents. Very few close the loop.</h2>
+        <p class="section__body">
+          This project was built to reduce the gap between alerting and recovery. The point is
+          not just to show AI on a dashboard. It is to demonstrate a recovery pipeline that can
+          observe a failure, reason about it, mutate code, and push a safer version back to production.
+        </p>
+      </div>
+
+      <div class="feature-grid">
+        <article class="feature-card" data-reveal style="--reveal-delay: 70ms;">
+          <div class="feature-card__number">01</div>
+          <h3 class="feature-card__title">Context first</h3>
+          <p class="feature-card__body">
+            The system collects logs, route details, and symptoms before any AI step starts,
+            so the remediation engine works from evidence instead of guesses.
+          </p>
+        </article>
+
+        <article class="feature-card" data-reveal style="--reveal-delay: 140ms;">
+          <div class="feature-card__number">02</div>
+          <h3 class="feature-card__title">Reasoning with memory</h3>
+          <p class="feature-card__body">
+            Backboard.io adds retrieval over historical incidents and known fixes, making the
+            repair plan more grounded than a one-shot prompt.
+          </p>
+        </article>
+
+        <article class="feature-card" data-reveal style="--reveal-delay: 210ms;">
+          <div class="feature-card__number">03</div>
+          <h3 class="feature-card__title">Deployment as the finish line</h3>
+          <p class="feature-card__body">
+            The loop is only complete when GitHub Actions, ECR, and ECS finish the rollout and
+            the service is healthy again.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="workflow">
+      <div class="section__intro" data-reveal>
+        <div class="section__eyebrow">Workflow</div>
+        <h2 class="section__title">The recovery path, animated like a control room.</h2>
+        <p class="section__body">
+          This mirrors the architecture in the README: application traffic, fault detection,
+          incident routing, AI decisioning, patch execution, and the redeploy loop back into ECS.
+        </p>
+      </div>
+
+      <div class="workflow-shell">
+        <div class="workflow-grid">
+          <article class="workflow-step" data-reveal style="--reveal-delay: 20ms; --flow-color: #6d83ff;">
+            <div class="workflow-step__kicker">Application layer</div>
+            <h3 class="workflow-step__title">User and ECS</h3>
+            <p class="workflow-step__body">
+              Traffic reaches the ALB and ECS service. This is the production surface where
+              the failure begins and where the fixed version must return healthy.
+            </p>
+            <div class="workflow-step__footer">
+              <span>ALB + Fargate</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+
+          <article class="workflow-step" data-reveal style="--reveal-delay: 90ms; --flow-color: #ffbd4a;">
+            <div class="workflow-step__kicker">Detection</div>
+            <h3 class="workflow-step__title">CloudWatch</h3>
+            <p class="workflow-step__body">
+              Known failure markers and runtime traces are captured in CloudWatch, providing
+              the trigger that starts the recovery pipeline.
+            </p>
+            <div class="workflow-step__footer">
+              <span>Log trigger</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+
+          <article class="workflow-step" data-reveal style="--reveal-delay: 160ms; --flow-color: #f6a93f;">
+            <div class="workflow-step__kicker">Routing</div>
+            <h3 class="workflow-step__title">Fault Router</h3>
+            <p class="workflow-step__body">
+              The Lambda pulls the useful incident data together so downstream systems receive
+              structured context instead of raw noisy logs.
+            </p>
+            <div class="workflow-step__footer">
+              <span>Lambda parser</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+
+          <article class="workflow-step" data-reveal style="--reveal-delay: 230ms; --flow-color: #dd68ff;">
+            <div class="workflow-step__kicker">AI decision</div>
+            <h3 class="workflow-step__title">Backboard.io</h3>
+            <p class="workflow-step__body">
+              Retrieval-augmented reasoning searches prior incidents, compares repair patterns,
+              and turns the evidence into a remediation plan.
+            </p>
+            <div class="workflow-step__footer">
+              <span>RAG plan</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+
+          <article class="workflow-step" data-reveal style="--reveal-delay: 300ms; --flow-color: #ff5f9d;">
+            <div class="workflow-step__kicker">Execution</div>
+            <h3 class="workflow-step__title">GitHub Tool</h3>
+            <p class="workflow-step__body">
+              The execution Lambda uses the plan to generate a patch, commit the change, and
+              keep the fix path auditable inside GitHub.
+            </p>
+            <div class="workflow-step__footer">
+              <span>Patch push</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+
+          <article class="workflow-step" data-reveal style="--reveal-delay: 370ms; --flow-color: #11d2bd;">
+            <div class="workflow-step__kicker">Recovery loop</div>
+            <h3 class="workflow-step__title">CI/CD and ECR</h3>
+            <p class="workflow-step__body">
+              GitHub Actions builds the image, pushes to ECR, updates ECS, and verifies the
+              deployment so the system loops back to a healthy runtime.
+            </p>
+            <div class="workflow-step__footer">
+              <span>Redeploy verify</span>
+              <span class="workflow-step__signal"></span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section__intro" data-reveal>
+        <div class="section__eyebrow">Guardrails</div>
+        <h2 class="section__title">Automation with boundaries, not chaos.</h2>
+        <p class="section__body">
+          The project is designed to feel ambitious without being reckless: each step is
+          constrained, inspectable, and measurable so the recovery loop stays explainable.
+        </p>
+      </div>
+
+      <div class="guardrail-grid">
+        <article class="guardrail-card" data-reveal style="--reveal-delay: 70ms;">
+          <h3 class="guardrail-card__title">Deterministic triggers</h3>
+          <p class="guardrail-card__body">
+            Controlled fault markers make the demo repeatable, which means recovery speed and
+            behavior can be observed instead of guessed.
+          </p>
+        </article>
+
+        <article class="guardrail-card" data-reveal style="--reveal-delay: 140ms;">
+          <h3 class="guardrail-card__title">Auditable code changes</h3>
+          <p class="guardrail-card__body">
+            Generated patches move through GitHub and CI/CD, preserving history and allowing
+            every automated change to be reviewed later.
+          </p>
+        </article>
+
+        <article class="guardrail-card" data-reveal style="--reveal-delay: 210ms;">
+          <h3 class="guardrail-card__title">Operational visibility</h3>
+          <p class="guardrail-card__body">
+            Incident dashboards, logs, and redeploy status make the system explain what it is
+            doing while it is recovering the service.
+          </p>
+        </article>
+      </div>
+    </section>
   </div>
-
-  <p class="text-center text-lg">
-   🚀 Learn to Build a SAAS App with Flask at:
-    <strong>
-      <a class="border-b border-gray-900 mb-1" href="https://buildasaasappwithflask.com?ref=docker-flask-example">https://buildasaasappwithflask.com</a>
-    </strong>
-  </p>
-
-  <p class="text-center text-lg mt-6">
-   🐳 Learn the Docker fundamentals at:
-    <strong>
-      <a class="border-b border-gray-900 mb-1" href="https://diveintodocker.com?ref=docker-flask-example">https://diveintodocker.com</a>
-    </strong>
-  </p>
 {% endblock %}
