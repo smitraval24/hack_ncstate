@@ -9,7 +9,7 @@ import boto3
 BACKBOARD_BASE_URL = "https://app.backboard.io/api"
 HARDCODED_THREAD_ID = "39a2c193-1038-434a-8889-4b874b81bf13"
 BACKBOARD_API_KEY = "espr_khwJLso-d0cJdFtfvnDkfQHUPEG50K9-RsOlm_YE9GA"
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 
 FAULT_CODES = {
     "FAULT_SQL_INJECTION_TEST",
@@ -62,54 +62,50 @@ def backboard_message(thread_id: str, content: str) -> dict:
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 
-def invoke_gemini(incident, analysis):
+def invoke_claude(incident, analysis):
     tools = [
         {
-            "function_declarations": [
-                {
-                    "name": "read_github_file",
-                    "description": "Read the current content of a file from the GitHub repository before making changes.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file to read e.g. hello/page/views.py"
-                            }
-                        },
-                        "required": ["file_path"]
+            "name": "read_github_file",
+            "description": "Read the current content of a file from the GitHub repository before making changes.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to read e.g. hello/page/views.py"
                     }
                 },
-                {
-                    "name": "push_github_fix",
-                    "description": "Push a code fix directly to GitHub by updating a file in the repository.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {
-                                "type": "string",
-                                "description": "Path to the file to update e.g. hello/page/views.py"
-                            },
-                            "file_content": {
-                                "type": "string",
-                                "description": "The full updated file content to commit"
-                            },
-                            "commit_message": {
-                                "type": "string",
-                                "description": "Git commit message describing the fix"
-                            }
-                        },
-                        "required": ["file_path", "file_content", "commit_message"]
+                "required": ["file_path"]
+            }
+        },
+        {
+            "name": "push_github_fix",
+            "description": "Push a code fix directly to GitHub by updating a file in the repository.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file to update e.g. hello/page/views.py"
+                    },
+                    "file_content": {
+                        "type": "string",
+                        "description": "The full updated file content to commit"
+                    },
+                    "commit_message": {
+                        "type": "string",
+                        "description": "Git commit message describing the fix"
                     }
-                }
-            ]
+                },
+                "required": ["file_path", "file_content", "commit_message"]
+            }
         }
     ]
 
-    contents = [
+    messages = [
         {
             "role": "user",
-            "parts": [{"text": f"""You are a remediation agent. Analyze the incident and push a fix to GitHub.
+            "content": f"""You are a remediation agent. Analyze the incident and push a fix to GitHub.
 
 INCIDENT:
 {json.dumps(incident, indent=2)}
@@ -124,63 +120,71 @@ Steps you MUST follow:
 1. First call read_github_file to read the actual content of hello/page/views.py
 2. Analyze the file content and identify the vulnerability
 3. Call push_github_fix with the complete fixed file content
-4. Report what you changed"""}]
+4. Report what you changed"""
         }
     ]
 
-    # Agentic loop - keep going until Gemini stops calling tools
+    # Agentic loop - keep going until Claude stops calling tools
     while True:
         body = json.dumps({
-            "contents": contents,
-            "tools": tools
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 8192,
+            "tools": tools,
+            "messages": messages
         }).encode("utf-8")
 
         req = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
+            "https://api.anthropic.com/v1/messages",
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01"
+            },
             method="POST"
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=90) as r:
                 response = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             error_body = e.read().decode("utf-8")
-            print(f"GEMINI_ERROR: {error_body}")
+            print(f"CLAUDE_ERROR: {error_body}")
             raise
 
-        candidate = response["candidates"][0]
-        contents.append(candidate["content"])
-        parts = candidate["content"].get("parts", [])
+        stop_reason = response.get("stop_reason")
+        content_blocks = response.get("content", [])
 
-        # Check if Gemini wants to call a tool
-        tool_calls = [p for p in parts if "functionCall" in p]
+        # Append assistant response to messages
+        messages.append({"role": "assistant", "content": content_blocks})
 
-        if not tool_calls:
-            # No tool calls - return the text response
-            for part in parts:
-                if "text" in part:
-                    return part["text"]
+        # Check if Claude wants to call tools
+        tool_use_blocks = [b for b in content_blocks if b["type"] == "tool_use"]
+
+        if not tool_use_blocks:
+            # No tool calls - extract text response
+            for block in content_blocks:
+                if block["type"] == "text":
+                    return block["text"]
             return "Remediation complete."
 
         # Handle tool calls
         tool_results = []
         lambda_client = boto3.client("lambda")
 
-        for part in tool_calls:
-            fn = part["functionCall"]
-            fn_name = fn["name"]
-            fn_args = fn.get("args", {})
+        for block in tool_use_blocks:
+            tool_name = block["name"]
+            tool_input = block.get("input", {})
+            tool_use_id = block["id"]
 
-            print(f"TOOL_CALL: {fn_name} → {json.dumps(fn_args)}")
+            print(f"TOOL_CALL: {tool_name} -> {json.dumps(tool_input)}")
 
             github_event = {
                 "actionGroup": "GitHubActions",
-                "function": fn_name,
+                "function": tool_name,
                 "parameters": [
                     {"name": k, "value": v}
-                    for k, v in fn_args.items()
+                    for k, v in tool_input.items()
                 ]
             }
 
@@ -191,20 +195,16 @@ Steps you MUST follow:
 
             payload = json.loads(github_resp["Payload"].read())
             result_body = payload["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
-            print(f"TOOL_RESULT: {result_body}")
+            print(f"TOOL_RESULT: {result_body[:2000]}")
 
             tool_results.append({
-                "functionResponse": {
-                    "name": fn_name,
-                    "response": {"result": result_body}
-                }
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": result_body
             })
 
-        # Feed tool results back to Gemini
-        contents.append({
-            "role": "user",
-            "parts": tool_results
-        })
+        # Feed tool results back to Claude
+        messages.append({"role": "user", "content": tool_results})
 
 def lambda_handler(event, context):
     cw = decode_cw_payload(event)
@@ -230,9 +230,9 @@ def lambda_handler(event, context):
             )
             print("BACKBOARD_ANALYSIS:", json.dumps(analysis)[:4000])
 
-            # 2️⃣ Call Gemini API with GitHub tools
-            agent_output = invoke_gemini(inc, analysis)
-            print("GEMINI_OUTPUT:", agent_output[:4000])
+            # 2️⃣ Call Claude API with GitHub tools
+            agent_output = invoke_claude(inc, analysis)
+            print("CLAUDE_OUTPUT:", agent_output[:4000])
 
             # 3️⃣ Post remediation back to Backboard thread
             backboard_message(
