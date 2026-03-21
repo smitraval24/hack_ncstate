@@ -534,11 +534,10 @@ def _fetch_incidents() -> tuple[list[dict], str, str | None]:
         else:
             source = "cloudwatch"
     elif cw_error:
-        incidents, source = get_mock_incidents(), "mock"
-        incidents = _sync_status(incidents)
+        incidents, source = [], "none"
         return incidents, source, cw_error
     else:
-        incidents, source = get_mock_incidents(), "mock"
+        incidents, source = [], "none"
 
     incidents = _sync_status(incidents)
     return incidents, source, cw_error
