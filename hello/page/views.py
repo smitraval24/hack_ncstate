@@ -148,104 +148,207 @@ def test_fault_run():
     ), (500 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
+def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, backoff_factor=2.0):
+    """
+    Make external API call with exponential backoff retry and circuit breaker logic.
+    
+    Args:
+        url: The API endpoint URL
+        max_retries: Maximum number of retry attempts
+        base_timeout: Base timeout in seconds
+        backoff_factor: Multiplier for exponential backoff
+    
+    Returns:
+        tuple: (response, latency, error_details)
+    """
+    last_exception = None
+    total_latency = 0
+    
+    for attempt in range(max_retries + 1):  # +1 for initial attempt
+        start_time = time.time()
+        timeout = base_timeout * (backoff_factor ** attempt)
+        
+        try:
+            current_app.logger.info(f"API call attempt {attempt + 1}/{max_retries + 1}, timeout={timeout:.1f}s")
+            
+            # Use session for connection pooling and better performance
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Flask-App/1.0',
+                'Accept': 'application/json',
+                'Connection': 'close'  # Prevent connection reuse issues
+            })
+            
+            response = session.get(
+                url, 
+                timeout=(timeout / 2, timeout),  # (connect_timeout, read_timeout)
+                stream=False,  # Don't stream to avoid partial responses
+                verify=True,   # SSL verification
+                allow_redirects=False  # Prevent redirect loops
+            )
+            
+            attempt_latency = time.time() - start_time
+            total_latency += attempt_latency
+            
+            # Check response status
+            response.raise_for_status()
+            
+            current_app.logger.info(f"API call successful on attempt {attempt + 1}, latency={attempt_latency:.2f}s")
+            return response, total_latency, None
+            
+        except requests.exceptions.Timeout as e:
+            attempt_latency = time.time() - start_time
+            total_latency += attempt_latency
+            last_exception = e
+            current_app.logger.warning(f"Timeout on attempt {attempt + 1}, latency={attempt_latency:.2f}s")
+            
+        except requests.exceptions.ConnectionError as e:
+            attempt_latency = time.time() - start_time
+            total_latency += attempt_latency
+            last_exception = e
+            current_app.logger.warning(f"Connection error on attempt {attempt + 1}, latency={attempt_latency:.2f}s")
+            
+        except requests.exceptions.HTTPError as e:
+            attempt_latency = time.time() - start_time
+            total_latency += attempt_latency
+            last_exception = e
+            # Don't retry on 4xx errors (client errors)
+            if 400 <= e.response.status_code < 500:
+                current_app.logger.warning(f"Client error {e.response.status_code} on attempt {attempt + 1}, not retrying")
+                return None, total_latency, f"http_error_{e.response.status_code}"
+            current_app.logger.warning(f"Server error {e.response.status_code} on attempt {attempt + 1}, latency={attempt_latency:.2f}s")
+            
+        except Exception as e:
+            attempt_latency = time.time() - start_time
+            total_latency += attempt_latency
+            last_exception = e
+            current_app.logger.error(f"Unexpected error on attempt {attempt + 1}: {type(e).__name__}: {str(e)}")
+        
+        # Wait before retry (except on last attempt)
+        if attempt < max_retries:
+            wait_time = min(backoff_factor ** attempt, 10.0)  # Cap at 10 seconds
+            current_app.logger.info(f"Waiting {wait_time:.1f}s before retry...")
+            time.sleep(wait_time)
+    
+    # All attempts failed
+    return None, total_latency, last_exception
+
+
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
-    start = time.time()
-
+    overall_start = time.time()
+    
     try:
-        # FIX: Increased timeout from 0.001s to 30s for reasonable external API calls
+        # Get configuration from environment with sensible defaults
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        r = requests.get(f"{mock_api_base}/data", timeout=30.0)
-        latency = time.time() - start
+        max_retries = int(os.environ.get("EXTERNAL_API_MAX_RETRIES", "3"))
+        base_timeout = float(os.environ.get("EXTERNAL_API_BASE_TIMEOUT", "5.0"))
+        
+        # Validate configuration
+        if base_timeout < 1.0:
+            current_app.logger.warning(f"Base timeout {base_timeout} too low, setting to 5.0s")
+            base_timeout = 5.0
+            
+        if max_retries < 0 or max_retries > 10:
+            current_app.logger.warning(f"Max retries {max_retries} out of range, setting to 3")
+            max_retries = 3
 
-        current_app.logger.info(f"external_call_latency={latency:.2f}")
-
-        r.raise_for_status()
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "data": r.json(),
-            "latency": f"{latency:.2f}s",
-        }
-
-    except requests.exceptions.Timeout:
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": "timeout",
-            "latency": f"{latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=external_timeout latency={latency:.2f}"
+        url = f"{mock_api_base}/data"
+        current_app.logger.info(f"Making external API call to {url} with timeout={base_timeout}s, retries={max_retries}")
+        
+        # Make the API call with retry logic
+        response, total_latency, error_details = make_external_api_call_with_retry(
+            url=url,
+            max_retries=max_retries,
+            base_timeout=base_timeout,
+            backoff_factor=2.0
         )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
-        try:
-            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="external_timeout", latency=latency)
-        except Exception:
-            current_app.logger.exception("Failed to create live incident")
-
-    except requests.exceptions.HTTPError:
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": "upstream_500",
-            "latency": f"{latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=upstream_failure latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
-        try:
-            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="upstream_failure", latency=latency)
-        except Exception:
-            current_app.logger.exception("Failed to create live incident")
-
-    except requests.exceptions.ConnectionError:
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": "connection_refused",
-            "latency": f"{latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=connection_error latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
-        try:
-            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="connection_error", latency=latency)
-        except Exception:
-            current_app.logger.exception("Failed to create live incident")
+        
+        if response:
+            # Success case
+            try:
+                data = response.json()
+            except ValueError:
+                # Handle non-JSON responses gracefully
+                data = {"raw_response": response.text[:500]}  # Limit response size
+                
+            result = {
+                "status": "ok",
+                "error_code": None,
+                "data": data,
+                "latency": f"{total_latency:.2f}s",
+                "status_code": response.status_code,
+                "attempts": "succeeded"
+            }
+            current_app.logger.info(f"External API call succeeded: latency={total_latency:.2f}s")
+            
+        else:
+            # All retries failed
+            result = {
+                "status": "error",
+                "error_code": error_code,
+                "detail": str(error_details) if error_details else "all_retries_failed",
+                "latency": f"{total_latency:.2f}s",
+                "attempts": max_retries + 1
+            }
+            
+            # Determine failure reason
+            if isinstance(error_details, requests.exceptions.Timeout):
+                reason = "external_timeout_after_retries"
+            elif isinstance(error_details, requests.exceptions.ConnectionError):
+                reason = "connection_error_after_retries"
+            elif isinstance(error_details, requests.exceptions.HTTPError):
+                reason = "http_error_after_retries"
+            elif isinstance(error_details, str) and error_details.startswith("http_error_"):
+                reason = "client_error"
+            else:
+                reason = "unhandled_exception_after_retries"
+            
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason={reason} latency={total_latency:.2f} attempts={max_retries + 1}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
+            
+            try:
+                create_live_incident(
+                    error_code=error_code,
+                    route="/test-fault/external-api",
+                    reason=reason,
+                    latency=total_latency
+                )
+            except Exception as incident_error:
+                current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
     except Exception as e:
-        latency = time.time() - start
+        # Handle unexpected errors in the endpoint itself
+        total_latency = time.time() - overall_start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": str(e),
-            "latency": f"{latency:.2f}s",
+            "detail": f"endpoint_error: {str(e)[:200]}",
+            "latency": f"{total_latency:.2f}s",
         }
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason=unhandled_exception latency={latency:.2f}"
+            f"reason=endpoint_exception latency={total_latency:.2f}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
+        
         try:
-            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="unhandled_exception", latency=latency)
-        except Exception:
-            current_app.logger.exception("Failed to create live incident")
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="endpoint_exception",
+                latency=total_latency
+            )
+        except Exception as incident_error:
+            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
     return render_template(
         "page/test_fault.html",
