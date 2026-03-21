@@ -1,7 +1,10 @@
+import json
+import logging
 import os
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, render_template, request
+import redis
+from flask import Blueprint, current_app, jsonify, render_template, request
 
 from config.settings import CLOUDWATCH_ENABLED
 from hello.aws.cloudwatch_logs import (
@@ -10,6 +13,8 @@ from hello.aws.cloudwatch_logs import (
     fetch_recent_events,
     get_cloudwatch_log_groups,
 )
+
+logger = logging.getLogger(__name__)
 
 developer = Blueprint("developer", __name__, template_folder="templates")
 
@@ -524,3 +529,125 @@ def incident_detail(incident_id):
         "developer/incident_detail.html",
         incident=incident
     )
+
+
+def _get_incident_by_id(incident_id: str) -> dict | None:
+    """Look up an incident from mock or CloudWatch data."""
+    if CLOUDWATCH_ENABLED:
+        cw_incidents, err = get_cloudwatch_incidents()
+        incidents = get_mock_incidents() if err else cw_incidents
+    else:
+        incidents = get_mock_incidents()
+    return next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
+
+
+def _incident_to_document(incident: dict) -> str:
+    """Serialize an incident dict into a text document for RAG indexing."""
+    parts = [
+        f"Incident ID: {incident['id']}",
+        f"Type: {incident.get('incident_type', 'Unknown')}",
+        f"Error Code: {incident.get('error_code', 'Unknown')}",
+        f"Severity: {incident.get('severity', 'Unknown')}",
+        f"Route: {incident.get('route', '-')}",
+        f"Status: {incident.get('status', 'unknown')}",
+        "",
+        "--- Symptoms ---",
+        f"Error Rate: {incident.get('symptoms', {}).get('error_rate', 'N/A')}",
+        f"P95 Latency: {incident.get('symptoms', {}).get('latency_p95', 'N/A')}",
+        f"Affected Requests: {incident.get('symptoms', {}).get('affected_requests', 'N/A')}",
+        "",
+        "--- Root Cause ---",
+        incident.get("root_cause", {}).get("explanation", "N/A"),
+        "",
+        "--- Remediation ---",
+        f"Action: {incident.get('remediation', {}).get('action_type', 'N/A')}",
+        "",
+        "--- Verification ---",
+        f"Success: {incident.get('verification', {}).get('success', 'N/A')}",
+        f"Health Check: {incident.get('verification', {}).get('health_check_status', 'N/A')}",
+    ]
+    return "\n".join(parts)
+
+
+@developer.post("/developer/incidents/<incident_id>/store-rag")
+def store_in_rag(incident_id):
+    """Store a resolved incident in the RAG knowledge base (Backboard)."""
+    incident = _get_incident_by_id(incident_id)
+    if not incident:
+        return jsonify({"success": False, "error": "Incident not found"}), 404
+
+    if incident.get("status") != "resolved":
+        return jsonify({"success": False, "error": "Incident not yet resolved"}), 400
+
+    try:
+        from hello.incident.rag_service import _get_config, _make_client, _run_async
+
+        assistant_id = _get_config("BACKBOARD_ASSISTANT_ID")
+        if not assistant_id:
+            return jsonify({"success": False, "error": "BACKBOARD_ASSISTANT_ID not configured"}), 400
+
+        content = _incident_to_document(incident)
+
+        async def _upload():
+            async with _make_client() as client:
+                doc = await client.upload_document(
+                    assistant_id=assistant_id,
+                    content=content,
+                    filename=f"incident_{incident_id}.txt",
+                )
+                return doc.document_id
+
+        doc_id = _run_async(_upload())
+        logger.info("Stored incident %s in RAG as doc %s", incident_id, doc_id)
+        return jsonify({"success": True, "document_id": doc_id})
+
+    except Exception as e:
+        logger.exception("Failed to store incident %s in RAG", incident_id)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@developer.post("/developer/incidents/<incident_id>/store-cache")
+def store_in_cache(incident_id):
+    """Cache a resolved incident in Redis for fast lookup."""
+    incident = _get_incident_by_id(incident_id)
+    if not incident:
+        return jsonify({"success": False, "error": "Incident not found"}), 404
+
+    if incident.get("status") != "resolved":
+        return jsonify({"success": False, "error": "Incident not yet resolved"}), 400
+
+    try:
+        redis_url = current_app.config.get("REDIS_URL", "redis://redis:6379/0")
+        r = redis.from_url(redis_url)
+
+        # Build a JSON-safe copy
+        cache_data = {}
+        for k, v in incident.items():
+            if isinstance(v, datetime):
+                cache_data[k] = v.isoformat()
+            elif isinstance(v, dict):
+                # Handle nested datetimes
+                nested = {}
+                for nk, nv in v.items():
+                    nested[nk] = nv.isoformat() if isinstance(nv, datetime) else nv
+                cache_data[k] = nested
+            else:
+                cache_data[k] = v
+
+        cache_key = f"incident:resolved:{incident_id}"
+        ttl_seconds = 86400 * 7  # 7 days
+        r.setex(cache_key, ttl_seconds, json.dumps(cache_data))
+
+        # Also index by error_code for quick lookup of similar incidents
+        error_code = incident.get("error_code", "")
+        if error_code:
+            index_key = f"incident:by_error:{error_code}"
+            r.sadd(index_key, incident_id)
+            r.expire(index_key, ttl_seconds)
+
+        logger.info("Cached incident %s in Redis (TTL: 7d)", incident_id)
+        return jsonify({"success": True, "cache_key": cache_key, "ttl": "7 days"})
+
+    except Exception as e:
+        logger.exception("Failed to cache incident %s", incident_id)
+        return jsonify({"success": False, "error": str(e)}), 500
