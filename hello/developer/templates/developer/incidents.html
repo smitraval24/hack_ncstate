@@ -287,7 +287,7 @@
   <script>
     // Incidents Over Time Chart
     const incidentsCtx = document.getElementById('incidentsChart').getContext('2d');
-    new Chart(incidentsCtx, {
+    const incidentsChart = new Chart(incidentsCtx, {
       type: 'line',
       data: {
         labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
@@ -323,7 +323,7 @@
 
     // Incident Types Chart
     const typesCtx = document.getElementById('typesChart').getContext('2d');
-    new Chart(typesCtx, {
+    const typesChart = new Chart(typesCtx, {
       type: 'doughnut',
       data: {
         labels: ['External API Timeout', 'Database Issues', 'SQL Errors', 'Connection Errors'],
@@ -352,5 +352,94 @@
         }
       }
     });
+
+    // Auto-refresh: poll every 10 seconds for real-time updates
+    const REFRESH_INTERVAL = 10000;
+
+    function updateDashboard() {
+      fetch('/developer/incidents/api/data')
+        .then(res => res.json())
+        .then(data => {
+          // Update metric cards
+          const metricEls = document.querySelectorAll('.text-4xl');
+          if (metricEls.length >= 4) {
+            metricEls[0].innerHTML = data.metrics.active_incidents;
+            metricEls[1].innerHTML = data.metrics.resolved_total;
+            metricEls[2].innerHTML = data.metrics.auto_resolution_rate + '%';
+            metricEls[3].innerHTML = data.metrics.mttr + '<span class="text-xl">m</span>';
+          }
+
+          // Update resolved today count
+          const resolvedTodayEl = document.querySelector('.text-xs.text-gray-500.mt-2');
+          if (resolvedTodayEl) {
+            resolvedTodayEl.textContent = data.metrics.resolved_today + ' resolved today';
+          }
+
+          // Update line chart (today's data point)
+          incidentsChart.data.datasets[0].data[6] = data.incidents.length;
+          incidentsChart.data.datasets[1].data[6] = data.metrics.resolved_today;
+          incidentsChart.update('none');
+
+          // Update doughnut chart
+          typesChart.data.datasets[0].data = [
+            data.type_counts.external_api,
+            data.type_counts.db,
+            data.type_counts.sql,
+            data.type_counts.connection
+          ];
+          typesChart.update('none');
+
+          // Update incidents table
+          const tbody = document.querySelector('tbody');
+          if (tbody && data.incidents) {
+            tbody.innerHTML = data.incidents.map(inc => {
+              const severityBadge = inc.severity === 'critical'
+                ? '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-red-500 to-red-600 text-white shadow-sm">Critical</span>'
+                : inc.severity === 'high'
+                ? '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-orange-500 to-orange-600 text-white shadow-sm">High</span>'
+                : '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-yellow-500 to-yellow-600 text-white shadow-sm">Medium</span>';
+
+              let statusBadge = '';
+              if (inc.status === 'resolved') {
+                statusBadge = '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-green-500 to-green-600 text-white shadow-sm"><svg class="w-2 h-2 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>Resolved</span>';
+              } else if (inc.status === 'in_progress') {
+                statusBadge = '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-sm animate-pulse"><svg class="w-2 h-2 mr-1 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>In Progress</span>';
+              } else {
+                statusBadge = '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-red-500 to-pink-600 text-white shadow-sm animate-pulse"><svg class="w-2 h-2 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>Detected</span>';
+              }
+
+              return `<tr class="hover:bg-gradient-to-r hover:from-blue-50 hover:to-purple-50 transition-all duration-200 group">
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-mono font-bold">
+                  <a href="/developer/incidents/${inc.id}" class="text-purple-600 hover:text-purple-900 hover:underline">${inc.id}</a>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                  <div class="flex items-center gap-2">
+                    <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    ${inc.timestamp_opened || '-'}
+                  </div>
+                </td>
+                <td class="px-6 py-4 text-sm font-medium text-gray-900 max-w-xs truncate">${inc.incident_type}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm">${severityBadge}</td>
+                <td class="px-6 py-4 text-sm font-mono text-gray-600 max-w-xs truncate">${inc.route}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm">${statusBadge}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                  <a href="/developer/incidents/${inc.id}" class="inline-flex items-center gap-1 font-semibold text-purple-600 hover:text-purple-900 transition-colors duration-200">
+                    View Details <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+                  </a>
+                </td>
+              </tr>`;
+            }).join('');
+          }
+
+          // Update total count
+          const totalEl = document.querySelector('.text-sm.font-semibold.text-gray-700');
+          if (totalEl) {
+            totalEl.innerHTML = 'Showing <span class="text-purple-600">' + data.incidents.length + '</span> of <span class="text-purple-600">' + data.metrics.total_incidents + '</span> total incidents';
+          }
+        })
+        .catch(err => console.warn('Dashboard refresh failed:', err));
+    }
+
+    setInterval(updateDashboard, REFRESH_INTERVAL);
   </script>
 {% endblock %}

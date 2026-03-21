@@ -99,7 +99,7 @@
               <div class="flex-1">
                 <p class="text-xs font-bold text-gray-900 mb-1">Analyzed</p>
                 <p class="text-xs text-gray-500">
-                  {% if incident.root_cause.confidence_score %}
+                  {% if incident.root_cause.confidence_score is not none %}
                     {{ (incident.root_cause.confidence_score * 100)|round }}% confidence
                   {% endif %}
                 </p>
@@ -212,9 +212,10 @@
             <div class="flex items-center justify-between mb-2">
               <span class="text-sm font-medium text-gray-500">Source</span>
               <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                {{ incident.root_cause.source }}
+                {{ incident.root_cause.source or 'unknown' }}
               </span>
             </div>
+            {% if incident.root_cause.confidence_score is not none %}
             <div class="flex items-center justify-between">
               <span class="text-sm font-medium text-gray-500">Confidence Score</span>
               <span class="text-lg font-bold text-blue-600">{{ (incident.root_cause.confidence_score * 100)|round }}%</span>
@@ -222,6 +223,12 @@
             <div class="mt-2 w-full bg-gray-200 rounded-full h-2">
               <div class="bg-blue-600 h-2 rounded-full" style="width: {{ (incident.root_cause.confidence_score * 100)|round }}%"></div>
             </div>
+            {% else %}
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium text-gray-500">Confidence Score</span>
+              <span class="text-sm text-gray-400">Pending analysis</span>
+            </div>
+            {% endif %}
           </div>
 
           <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -247,10 +254,10 @@
           <div class="space-y-3">
             <div>
               <dt class="text-sm font-medium text-gray-500">Action Type</dt>
-              <dd class="mt-1 text-base font-semibold text-gray-900">{{ incident.remediation.action_type|replace('_', ' ')|title }}</dd>
+              <dd class="mt-1 text-base font-semibold text-gray-900">{{ (incident.remediation.action_type or 'Pending')|replace('_', ' ')|title }}</dd>
             </div>
 
-            {% if incident.remediation.parameters %}
+            {% if incident.remediation.parameters is not none and incident.remediation.parameters %}
             <div>
               <dt class="text-sm font-medium text-gray-500 mb-2">Parameters</dt>
               <dd class="bg-gray-900 rounded-lg p-3 overflow-x-auto">
@@ -302,15 +309,15 @@
             <div class="grid grid-cols-2 gap-3">
               <div class="bg-gray-50 rounded-lg p-3">
                 <p class="text-xs text-gray-500">Total Requests</p>
-                <p class="text-lg font-bold text-gray-900">{{ incident.breadcrumbs.metric_snapshot.total_requests }}</p>
+                <p class="text-lg font-bold text-gray-900">{{ incident.breadcrumbs.metric_snapshot.total_requests if incident.breadcrumbs.metric_snapshot.total_requests is not none else '—' }}</p>
               </div>
               <div class="bg-gray-50 rounded-lg p-3">
                 <p class="text-xs text-gray-500">Failed Requests</p>
-                <p class="text-lg font-bold text-red-600">{{ incident.breadcrumbs.metric_snapshot.failed_requests }}</p>
+                <p class="text-lg font-bold text-red-600">{{ incident.breadcrumbs.metric_snapshot.failed_requests if incident.breadcrumbs.metric_snapshot.failed_requests is not none else '—' }}</p>
               </div>
               <div class="bg-gray-50 rounded-lg p-3">
                 <p class="text-xs text-gray-500">Avg Latency</p>
-                <p class="text-lg font-bold text-orange-600">{{ incident.breadcrumbs.metric_snapshot.avg_latency }}</p>
+                <p class="text-lg font-bold text-orange-600">{{ incident.breadcrumbs.metric_snapshot.avg_latency or '—' }}</p>
               </div>
               <div class="bg-gray-50 rounded-lg p-3">
                 <p class="text-xs text-gray-500">Timestamp</p>
@@ -402,7 +409,7 @@
               {% if incident.verification.health_check_status == 'passed' %}bg-green-100 text-green-800
               {% elif incident.verification.health_check_status == 'degraded' %}bg-yellow-100 text-yellow-800
               {% else %}bg-gray-100 text-gray-800{% endif %}">
-              {{ incident.verification.health_check_status|capitalize }}
+              {{ (incident.verification.health_check_status or 'unknown')|capitalize }}
             </span>
           </div>
 
@@ -459,8 +466,8 @@
         datasets: [{
           label: 'Error Rate (%)',
           data: [
-            {{ incident.verification.error_rate_before or 0 }},
-            {{ incident.verification.error_rate_after or 0 }}
+            {{ incident.verification.error_rate_before if incident.verification.error_rate_before is not none else 0 }},
+            {{ incident.verification.error_rate_after if incident.verification.error_rate_after is not none else 0 }}
           ],
           backgroundColor: [
             'rgba(239, 68, 68, 0.8)',
@@ -499,8 +506,8 @@
         datasets: [{
           label: 'Latency (seconds)',
           data: [
-            {{ incident.verification.latency_before or 0 }},
-            {{ incident.verification.latency_after or 0 }}
+            {{ incident.verification.latency_before if incident.verification.latency_before is not none else 0 }},
+            {{ incident.verification.latency_after if incident.verification.latency_after is not none else 0 }}
           ],
           backgroundColor: [
             'rgba(249, 115, 22, 0.8)',

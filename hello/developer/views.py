@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timedelta
 
-from flask import Blueprint, render_template
+from flask import Blueprint, jsonify, render_template, request
 
 from config.settings import CLOUDWATCH_ENABLED
 from hello.aws.cloudwatch_logs import (
@@ -300,6 +300,17 @@ def get_mock_incidents():
         }
     ]
 
+    # Derive status from verification result so it stays in sync
+    for inc in incidents:
+        verification = inc.get("verification") or {}
+        if verification.get("success") is True:
+            inc["status"] = "resolved"
+            if not inc.get("timestamp_resolved"):
+                inc["timestamp_resolved"] = now
+        elif verification.get("success") is False:
+            inc["status"] = "in_progress"
+        # else keep as-is (detected/pending)
+
     return incidents
 
 
@@ -443,6 +454,58 @@ def incidents_dashboard():
     )
 
 
+@developer.get("/developer/incidents/api/data")
+def incidents_api_data():
+    """JSON API for real-time dashboard updates via polling."""
+    data_source = "mock"
+    incidents: list[dict]
+    if CLOUDWATCH_ENABLED:
+        cw_incidents, err = get_cloudwatch_incidents()
+        if err:
+            incidents = get_mock_incidents()
+        else:
+            incidents = cw_incidents
+            data_source = "cloudwatch"
+    else:
+        incidents = get_mock_incidents()
+
+    metrics = get_dashboard_metrics(incidents)
+
+    type_counts = {"external_api": 0, "db": 0, "sql": 0, "connection": 0}
+    for inc in incidents:
+        t = (inc.get("incident_type") or "").lower()
+        ec = (inc.get("error_code") or "").lower()
+        if "external api" in t or "external_api" in ec:
+            type_counts["external_api"] += 1
+        elif "database" in t or "db" in ec:
+            type_counts["db"] += 1
+        elif "sql" in t or "sql" in ec:
+            type_counts["sql"] += 1
+        else:
+            type_counts["connection"] += 1
+
+    # Serialize incidents for JSON
+    serialized = []
+    for inc in incidents:
+        s = dict(inc)
+        for key in ("timestamp_opened", "timestamp_resolved"):
+            if s.get(key):
+                s[key] = s[key].strftime("%Y-%m-%d %H:%M")
+            else:
+                s[key] = None
+        if s.get("remediation", {}).get("execution_timestamp"):
+            s["remediation"] = dict(s["remediation"])
+            s["remediation"]["execution_timestamp"] = s["remediation"]["execution_timestamp"].strftime("%Y-%m-%d %H:%M")
+        serialized.append(s)
+
+    return jsonify({
+        "metrics": metrics,
+        "type_counts": type_counts,
+        "incidents": serialized,
+        "data_source": data_source,
+    })
+
+
 @developer.get("/developer/incidents/<incident_id>")
 def incident_detail(incident_id):
     """Incident detail page"""
@@ -452,7 +515,7 @@ def incident_detail(incident_id):
         incidents = get_mock_incidents() if err else cw_incidents
     else:
         incidents = get_mock_incidents()
-    incident = next((i for i in incidents if i["id"] == incident_id), None)
+    incident = next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
 
     if not incident:
         return "Incident not found", 404
