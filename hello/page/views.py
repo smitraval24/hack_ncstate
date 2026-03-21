@@ -156,9 +156,9 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # BUG: Timeout set to 0.001s - guarantees timeout on any external call
+        # FIX: Increased timeout from 0.001s to 30s for reasonable external API calls
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        r = requests.get(f"{mock_api_base}/data", timeout=0.001)
+        r = requests.get(f"{mock_api_base}/data", timeout=30.0)
         latency = time.time() - start
 
         current_app.logger.info(f"external_call_latency={latency:.2f}")
