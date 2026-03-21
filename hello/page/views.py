@@ -5,7 +5,7 @@ import logging
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, request, current_app
+from flask import Blueprint, render_template, request, current_app, abort
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -40,20 +40,37 @@ def test_fault():
 
 @page.post("/test-fault/run")
 def test_fault_run():
+    # Security check: Only allow fault injection in test environments
+    if not ENABLE_FAULT_INJECTION:
+        current_app.logger.warning("Fault injection attempt blocked - not enabled in this environment")
+        abort(403)
+    
+    # Additional environment check for production safety
+    env = os.environ.get("FLASK_ENV", "").lower()
+    if env == "production":
+        current_app.logger.error("Fault injection blocked in production environment")
+        abort(403)
+    
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
     try:
-        db.session.execute(text("SELECT * FROM users"))
+        # Use parameterized query to prevent actual SQL injection vulnerabilities
+        # This is a safe test query that doesn't expose real data
+        safe_query = text("SELECT 1 as test_column WHERE :param = :param")
+        db.session.execute(safe_query, {"param": "test_value"})
+        
+        # Log successful test execution
+        current_app.logger.info("SQL injection test completed safely")
+        
     except Exception as e:
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed"
+            f"reason=sql_test_execution_error"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
 
     return render_template(
