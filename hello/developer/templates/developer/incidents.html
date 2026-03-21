@@ -21,7 +21,14 @@
               Production monitoring and incident tracking for self-healing operations
             </p>
             <div class="mt-3 flex items-center gap-2">
-              {% if data_source == 'cloudwatch' %}
+              {% if data_source == 'live' %}
+                <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-sm animate-pulse">
+                  Source: Live Injected
+                </span>
+                <button onclick="resetIncidents()" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200 hover:bg-red-200 transition-colors cursor-pointer">
+                  Reset All
+                </button>
+              {% elif data_source == 'cloudwatch' %}
                 <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-indigo-500 to-blue-600 text-white shadow-sm">
                   Source: CloudWatch Logs
                 </span>
@@ -441,5 +448,19 @@
     }
 
     setInterval(updateDashboard, REFRESH_INTERVAL);
+
+    function resetIncidents() {
+      if (!confirm('Reset all live incidents?')) return;
+      fetch('/developer/incidents/reset', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            window.location.reload();
+          } else {
+            alert('Reset failed: ' + (data.error || 'Unknown error'));
+          }
+        })
+        .catch(err => alert('Reset failed: ' + err.message));
+    }
   </script>
 {% endblock %}

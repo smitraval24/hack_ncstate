@@ -13,6 +13,11 @@ from hello.aws.cloudwatch_logs import (
     fetch_recent_events,
     get_cloudwatch_log_groups,
 )
+from hello.incident.live_store import (
+    get_all_incidents as get_live_incidents,
+    get_incident as get_live_incident,
+    reset_all as reset_live_incidents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -404,28 +409,41 @@ def get_dashboard_metrics(incidents: list[dict] | None = None):
     }
 
 
+def _fetch_incidents() -> tuple[list[dict], str, str | None]:
+    """Fetch incidents from live store, CloudWatch, or mock data.
+
+    Returns (incidents, data_source, error_message).
+    Live incidents always take priority.
+    """
+    # Always check live store first
+    try:
+        live = get_live_incidents()
+    except Exception:
+        live = []
+
+    if live:
+        return live, "live", None
+
+    if CLOUDWATCH_ENABLED:
+        cw_incidents, cw_error = get_cloudwatch_incidents()
+        if not cw_error:
+            return cw_incidents, "cloudwatch", None
+        return get_mock_incidents(), "mock", cw_error
+
+    return get_mock_incidents(), "mock", None
+
+
 @developer.get("/developer/incidents")
 def incidents_dashboard():
     """Main incidents dashboard page"""
-    data_source = "mock"
-    cloudwatch_error = None
     cloudwatch_lookback_minutes: int | None = None
-
-    incidents: list[dict]
     if CLOUDWATCH_ENABLED:
         try:
             cloudwatch_lookback_minutes = int(os.getenv("CLOUDWATCH_LOOKBACK_MINUTES", "120"))
         except Exception:
             cloudwatch_lookback_minutes = None
-        cw_incidents, cloudwatch_error = get_cloudwatch_incidents()
-        if cloudwatch_error:
-            incidents = get_mock_incidents()
-            data_source = "mock"
-        else:
-            incidents = cw_incidents
-            data_source = "cloudwatch"
-    else:
-        incidents = get_mock_incidents()
+
+    incidents, data_source, cloudwatch_error = _fetch_incidents()
 
     metrics = get_dashboard_metrics(incidents)
 
@@ -462,17 +480,7 @@ def incidents_dashboard():
 @developer.get("/developer/incidents/api/data")
 def incidents_api_data():
     """JSON API for real-time dashboard updates via polling."""
-    data_source = "mock"
-    incidents: list[dict]
-    if CLOUDWATCH_ENABLED:
-        cw_incidents, err = get_cloudwatch_incidents()
-        if err:
-            incidents = get_mock_incidents()
-        else:
-            incidents = cw_incidents
-            data_source = "cloudwatch"
-    else:
-        incidents = get_mock_incidents()
+    incidents, data_source, _ = _fetch_incidents()
 
     metrics = get_dashboard_metrics(incidents)
 
@@ -514,12 +522,7 @@ def incidents_api_data():
 @developer.get("/developer/incidents/<incident_id>")
 def incident_detail(incident_id):
     """Incident detail page"""
-    incidents: list[dict]
-    if CLOUDWATCH_ENABLED:
-        cw_incidents, err = get_cloudwatch_incidents()
-        incidents = get_mock_incidents() if err else cw_incidents
-    else:
-        incidents = get_mock_incidents()
+    incidents, _, _ = _fetch_incidents()
     incident = next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
 
     if not incident:
@@ -532,12 +535,8 @@ def incident_detail(incident_id):
 
 
 def _get_incident_by_id(incident_id: str) -> dict | None:
-    """Look up an incident from mock or CloudWatch data."""
-    if CLOUDWATCH_ENABLED:
-        cw_incidents, err = get_cloudwatch_incidents()
-        incidents = get_mock_incidents() if err else cw_incidents
-    else:
-        incidents = get_mock_incidents()
+    """Look up an incident from live store, CloudWatch, or mock data."""
+    incidents, _, _ = _fetch_incidents()
     return next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
 
 
@@ -650,4 +649,15 @@ def store_in_cache(incident_id):
 
     except Exception as e:
         logger.exception("Failed to cache incident %s", incident_id)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@developer.post("/developer/incidents/reset")
+def reset_incidents():
+    """Clear all live incidents from the store."""
+    try:
+        count = reset_live_incidents()
+        return jsonify({"success": True, "deleted": count})
+    except Exception as e:
+        logger.exception("Failed to reset incidents")
         return jsonify({"success": False, "error": str(e)}), 500

@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
+from hello.incident.live_store import create_incident as create_live_incident
 
 page = Blueprint("page", __name__, template_folder="templates")
 
@@ -83,6 +84,15 @@ def test_fault_run():
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
 
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/run",
+                reason="invalid_sql_executed",
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
+
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
@@ -123,14 +133,16 @@ def test_fault_external_api():
             "detail": "timeout",
             "latency": f"{latency:.2f}s",
         }
-
         msg = (
             f"{error_code} route=/test-fault/external-api "
             f"reason=external_timeout latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="external_timeout", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     except requests.exceptions.HTTPError:
         latency = time.time() - start
@@ -140,14 +152,16 @@ def test_fault_external_api():
             "detail": "upstream_500",
             "latency": f"{latency:.2f}s",
         }
-
         msg = (
             f"{error_code} route=/test-fault/external-api "
             f"reason=upstream_failure latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="upstream_failure", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
@@ -157,14 +171,16 @@ def test_fault_external_api():
             "detail": "connection_refused",
             "latency": f"{latency:.2f}s",
         }
-
         msg = (
             f"{error_code} route=/test-fault/external-api "
             f"reason=connection_error latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="connection_error", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     except Exception as e:
         latency = time.time() - start
@@ -179,8 +195,11 @@ def test_fault_external_api():
             f"reason=unhandled_exception latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="unhandled_exception", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     return render_template(
         "page/test_fault.html",
@@ -221,8 +240,17 @@ def test_fault_db_timeout():
             f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-
         current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/db-timeout",
+                reason="db_timeout_or_pool_exhaustion",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     return render_template(
         "page/test_fault.html",
