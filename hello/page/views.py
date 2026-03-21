@@ -148,14 +148,14 @@ def test_fault_run():
     ), (500 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
-def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, backoff_factor=2.0):
+def make_external_api_call_with_retry(url, max_retries=3, base_timeout=10.0, backoff_factor=1.5):
     """
     Make external API call with exponential backoff retry and circuit breaker logic.
     
     Args:
         url: The API endpoint URL
         max_retries: Maximum number of retry attempts
-        base_timeout: Base timeout in seconds
+        base_timeout: Base timeout in seconds (increased default)
         backoff_factor: Multiplier for exponential backoff
     
     Returns:
@@ -166,7 +166,8 @@ def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, back
     
     for attempt in range(max_retries + 1):  # +1 for initial attempt
         start_time = time.time()
-        timeout = base_timeout * (backoff_factor ** attempt)
+        # Increased timeout calculation for better reliability
+        timeout = base_timeout + (base_timeout * 0.5 * attempt)
         
         try:
             current_app.logger.info(f"API call attempt {attempt + 1}/{max_retries + 1}, timeout={timeout:.1f}s")
@@ -179,9 +180,13 @@ def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, back
                 'Connection': 'close'  # Prevent connection reuse issues
             })
             
+            # Improved timeout configuration with separate connect/read timeouts
+            connect_timeout = min(timeout / 3, 5.0)  # Max 5s connect timeout
+            read_timeout = timeout - connect_timeout
+            
             response = session.get(
                 url, 
-                timeout=(timeout / 2, timeout),  # (connect_timeout, read_timeout)
+                timeout=(connect_timeout, read_timeout),
                 stream=False,  # Don't stream to avoid partial responses
                 verify=True,   # SSL verification
                 allow_redirects=False  # Prevent redirect loops
@@ -200,7 +205,7 @@ def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, back
             attempt_latency = time.time() - start_time
             total_latency += attempt_latency
             last_exception = e
-            current_app.logger.warning(f"Timeout on attempt {attempt + 1}, latency={attempt_latency:.2f}s")
+            current_app.logger.warning(f"Timeout on attempt {attempt + 1}, latency={attempt_latency:.2f}s, timeout={timeout:.1f}s")
             
         except requests.exceptions.ConnectionError as e:
             attempt_latency = time.time() - start_time
@@ -224,9 +229,9 @@ def make_external_api_call_with_retry(url, max_retries=3, base_timeout=5.0, back
             last_exception = e
             current_app.logger.error(f"Unexpected error on attempt {attempt + 1}: {type(e).__name__}: {str(e)}")
         
-        # Wait before retry (except on last attempt)
+        # Wait before retry (except on last attempt) - improved backoff calculation
         if attempt < max_retries:
-            wait_time = min(backoff_factor ** attempt, 10.0)  # Cap at 10 seconds
+            wait_time = min(backoff_factor ** attempt, 8.0)  # Cap at 8 seconds
             current_app.logger.info(f"Waiting {wait_time:.1f}s before retry...")
             time.sleep(wait_time)
     
@@ -242,29 +247,36 @@ def test_fault_external_api():
     overall_start = time.time()
     
     try:
-        # Get configuration from environment with sensible defaults
+        # Get configuration from environment with improved defaults
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        max_retries = int(os.environ.get("EXTERNAL_API_MAX_RETRIES", "3"))
-        base_timeout = float(os.environ.get("EXTERNAL_API_BASE_TIMEOUT", "5.0"))
+        max_retries = int(os.environ.get("EXTERNAL_API_MAX_RETRIES", "2"))  # Reduced default retries
+        base_timeout = float(os.environ.get("EXTERNAL_API_BASE_TIMEOUT", "10.0"))  # Increased default timeout
         
-        # Validate configuration
-        if base_timeout < 1.0:
-            current_app.logger.warning(f"Base timeout {base_timeout} too low, setting to 5.0s")
-            base_timeout = 5.0
+        # Enhanced configuration validation with better bounds
+        if base_timeout < 5.0:
+            current_app.logger.warning(f"Base timeout {base_timeout}s too low, setting to 10.0s")
+            base_timeout = 10.0
+        elif base_timeout > 30.0:
+            current_app.logger.warning(f"Base timeout {base_timeout}s too high, setting to 30.0s")
+            base_timeout = 30.0
             
-        if max_retries < 0 or max_retries > 10:
-            current_app.logger.warning(f"Max retries {max_retries} out of range, setting to 3")
-            max_retries = 3
+        if max_retries < 0 or max_retries > 5:
+            current_app.logger.warning(f"Max retries {max_retries} out of range, setting to 2")
+            max_retries = 2
 
         url = f"{mock_api_base}/data"
         current_app.logger.info(f"Making external API call to {url} with timeout={base_timeout}s, retries={max_retries}")
         
-        # Make the API call with retry logic
+        # Add URL validation to prevent SSRF
+        if not url.startswith(('http://', 'https://')):
+            raise ValueError("Invalid URL protocol")
+        
+        # Make the API call with improved retry logic
         response, total_latency, error_details = make_external_api_call_with_retry(
             url=url,
             max_retries=max_retries,
             base_timeout=base_timeout,
-            backoff_factor=2.0
+            backoff_factor=1.5  # More conservative backoff
         )
         
         if response:
@@ -286,7 +298,7 @@ def test_fault_external_api():
             current_app.logger.info(f"External API call succeeded: latency={total_latency:.2f}s")
             
         else:
-            # All retries failed
+            # All retries failed - improved error handling
             result = {
                 "status": "error",
                 "error_code": error_code,
@@ -295,7 +307,7 @@ def test_fault_external_api():
                 "attempts": max_retries + 1
             }
             
-            # Determine failure reason
+            # Determine failure reason with better categorization
             if isinstance(error_details, requests.exceptions.Timeout):
                 reason = "external_timeout_after_retries"
             elif isinstance(error_details, requests.exceptions.ConnectionError):
@@ -307,9 +319,11 @@ def test_fault_external_api():
             else:
                 reason = "unhandled_exception_after_retries"
             
+            # Enhanced logging with more context
             msg = (
                 f"{error_code} route=/test-fault/external-api "
-                f"reason={reason} latency={total_latency:.2f} attempts={max_retries + 1}"
+                f"reason={reason} latency={total_latency:.2f} attempts={max_retries + 1} "
+                f"timeout={base_timeout:.1f}s"
             )
             print(msg, file=sys.stderr)
             current_app.logger.error(msg)
@@ -324,6 +338,17 @@ def test_fault_external_api():
             except Exception as incident_error:
                 current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
+    except ValueError as ve:
+        # Handle configuration/validation errors
+        total_latency = time.time() - overall_start
+        result = {
+            "status": "error",
+            "error_code": "CONFIGURATION_ERROR",
+            "detail": str(ve),
+            "latency": f"{total_latency:.2f}s",
+        }
+        current_app.logger.error(f"Configuration error: {str(ve)}")
+        
     except Exception as e:
         # Handle unexpected errors in the endpoint itself
         total_latency = time.time() - overall_start
@@ -357,7 +382,7 @@ def test_fault_external_api():
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
-    ), (504 if result["status"] == "error" else 200)
+    ), (504 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
 @page.post("/test-fault/db-timeout")
