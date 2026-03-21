@@ -310,17 +310,6 @@ def get_mock_incidents():
         }
     ]
 
-    # Derive status from verification result so it stays in sync
-    for inc in incidents:
-        verification = inc.get("verification") or {}
-        if verification.get("success") is True:
-            inc["status"] = "resolved"
-            if not inc.get("timestamp_resolved"):
-                inc["timestamp_resolved"] = now
-        elif verification.get("success") is False:
-            inc["status"] = "in_progress"
-        # else keep as-is (detected/pending)
-
     return incidents
 
 
@@ -409,6 +398,25 @@ def get_dashboard_metrics(incidents: list[dict] | None = None):
     }
 
 
+def _sync_status(incidents: list[dict]) -> list[dict]:
+    """Derive status from verification result so it stays in sync.
+
+    Applies to ALL data sources (live, CloudWatch, mock) so that an incident
+    whose verification.success is True always shows as 'resolved'.
+    """
+    now = datetime.now()
+    for inc in incidents:
+        verification = inc.get("verification") or {}
+        if verification.get("success") is True:
+            inc["status"] = "resolved"
+            if not inc.get("timestamp_resolved"):
+                inc["timestamp_resolved"] = now
+        elif verification.get("success") is False:
+            inc["status"] = "in_progress"
+        # else keep as-is (detected/pending)
+    return incidents
+
+
 def _fetch_incidents() -> tuple[list[dict], str, str | None]:
     """Fetch incidents from live store, CloudWatch, or mock data.
 
@@ -422,15 +430,20 @@ def _fetch_incidents() -> tuple[list[dict], str, str | None]:
         live = []
 
     if live:
-        return live, "live", None
-
-    if CLOUDWATCH_ENABLED:
+        incidents, source = live, "live"
+    elif CLOUDWATCH_ENABLED:
         cw_incidents, cw_error = get_cloudwatch_incidents()
         if not cw_error:
-            return cw_incidents, "cloudwatch", None
-        return get_mock_incidents(), "mock", cw_error
+            incidents, source = cw_incidents, "cloudwatch"
+        else:
+            incidents, source = get_mock_incidents(), "mock"
+            incidents = _sync_status(incidents)
+            return incidents, source, cw_error
+    else:
+        incidents, source = get_mock_incidents(), "mock"
 
-    return get_mock_incidents(), "mock", None
+    incidents = _sync_status(incidents)
+    return incidents, source, None
 
 
 @developer.get("/developer/incidents")
