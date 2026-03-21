@@ -13,13 +13,15 @@ from hello.extensions import db
 
 page = Blueprint("page", __name__, template_folder="templates")
 
+PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
+
 
 @page.get("/")
 def home():
     return render_template(
         "page/home.html",
         flask_ver=version("flask"),
-        python_ver=os.environ["PYTHON_VERSION"],
+        python_ver=PYTHON_VER,
         debug=DEBUG,
         enable_fault_injection=ENABLE_FAULT_INJECTION,
     )
@@ -30,7 +32,7 @@ def test_fault():
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
-        python_ver=os.environ["PYTHON_VERSION"],
+        python_ver=PYTHON_VER,
         debug=DEBUG,
         enable_fault_injection=True,
     )
@@ -62,7 +64,7 @@ def test_fault_run():
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
-        python_ver=os.environ["PYTHON_VERSION"],
+        python_ver=PYTHON_VER,
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
@@ -71,16 +73,17 @@ def test_fault_run():
 
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
+    app = current_app._get_current_object()
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
     start = time.time()
 
     # Initialize circuit breaker variables in the application context if they don't exist
-    if not hasattr(current_app, 'circuit_open'):
-        current_app.circuit_open = False
-        current_app.circuit_open_time = None
-        current_app.failure_count = 0
+    if not hasattr(app, 'circuit_open'):
+        app.circuit_open = False
+        app.circuit_open_time = None
+        app.failure_count = 0
 
     circuit_breaker_timeout = 60  # seconds
     failure_threshold = 3
@@ -90,7 +93,7 @@ def test_fault_external_api():
         max_retries = 3
         retry_delay = 1  # seconds
 
-        if current_app.circuit_open and current_app.circuit_open_time and time.time() - current_app.circuit_open_time < circuit_breaker_timeout:
+        if app.circuit_open and app.circuit_open_time and time.time() - app.circuit_open_time < circuit_breaker_timeout:
             result = {
                 "status": "error",
                 "error_code": error_code,
@@ -100,7 +103,7 @@ def test_fault_external_api():
             return render_template(
                 "page/test_fault.html",
                 flask_ver=version("flask"),
-                python_ver=os.environ["PYTHON_VERSION"],
+                python_ver=PYTHON_VER,
                 debug=DEBUG,
                 enable_fault_injection=True,
                 result=result,
@@ -111,9 +114,7 @@ def test_fault_external_api():
                 r = requests.get(f"{mock_api_base}/data", timeout=3)
                 latency = time.time() - start
 
-                from flask import current_app
-
-                current_app.logger.info(f"external_call_latency={latency:.2f}")
+                app.logger.info(f"external_call_latency={latency:.2f}")
 
                 r.raise_for_status()
                 result = {
@@ -123,16 +124,15 @@ def test_fault_external_api():
                     "latency": f"{latency:.2f}s",
                 }
                 # Reset failure count upon success
-                current_app.failure_count = 0
+                app.failure_count = 0
                 break  # If successful, break the retry loop
             except requests.exceptions.RequestException as e:
-                current_app.failure_count += 1
+                app.failure_count += 1
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential backoff
-                    from flask import current_app
 
-                    current_app.logger.warning(f"Retrying after exception: {e}")
+                    app.logger.warning(f"Retrying after exception: {e}")
                 else:
                     raise  # If all retries failed, raise the exception
 
@@ -151,9 +151,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        from flask import current_app
-
-        current_app.logger.error(msg)
+        app.logger.error(msg)
 
     except requests.exceptions.HTTPError:
         latency = time.time() - start
@@ -170,9 +168,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        from flask import current_app
-
-        current_app.logger.error(msg)
+        app.logger.error(msg)
 
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
@@ -189,9 +185,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        from flask import current_app
-
-        current_app.logger.error(msg)
+        app.logger.error(msg)
 
     except Exception as e:
         # General exception handling
@@ -207,24 +201,22 @@ def test_fault_external_api():
             f"reason=unhandled_exception latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-        from flask import current_app
 
-        current_app.logger.error(msg)
+        app.logger.error(msg)
 
     finally:
         if result["status"] == "error" and result["error_code"] == error_code:
-            if current_app.failure_count >= failure_threshold:
-                current_app.circuit_open = True
-                current_app.circuit_open_time = time.time()
-                from flask import current_app
+            if app.failure_count >= failure_threshold:
+                app.circuit_open = True
+                app.circuit_open_time = time.time()
 
-                current_app.logger.warning("Circuit breaker opened")
+                app.logger.warning("Circuit breaker opened")
 
 
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
-        python_ver=os.environ["PYTHON_VERSION"],
+        python_ver=PYTHON_VER,
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
@@ -247,7 +239,7 @@ def test_fault_db_timeout():
     return render_template(
         "page/test_fault.html",
         flask_ver=version("flask"),
-        python_ver=os.environ["PYTHON_VERSION"],
+        python_ver=PYTHON_VER,
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
