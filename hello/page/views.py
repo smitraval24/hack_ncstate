@@ -43,23 +43,18 @@ def test_fault_run():
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
-    if ENABLE_FAULT_INJECTION:
-        user_input = request.form.get('user_input', '')
-        if user_input:
-            try:
-                # Use parameterized query to prevent SQL injection
-                query = text("SELECT * FROM users WHERE username = :username")
-                db.session.execute(query, {"username": user_input})
-                db.session.commit()  # Commit the transaction
-                result = {"status": "ok", "error_code": None}
-            except Exception as e:
-                current_app.logger.error(f"SQL error: {e}")
-                result = {"status": "error", "error_code": error_code}
+    try:
+        db.session.execute(text("SELECT * FROM users"))
+    except Exception as e:
+        result = {"status": "error", "error_code": error_code}
 
-        else:
-            result = {"status": "error", "error_code": error_code}
-    else:
-        result = {"status": "ok", "error_code": None}
+        msg = (
+            f"{error_code} route=/test-fault/run "
+            f"reason=invalid_sql_executed"
+        )
+        print(msg, file=sys.stderr)
+
+        current_app.logger.error(msg)
 
     return render_template(
         "page/test_fault.html",
@@ -73,68 +68,25 @@ def test_fault_run():
 
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
-    app = current_app._get_current_object()
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
     start = time.time()
 
-    # Initialize circuit breaker variables in the application context if they don't exist
-    if not hasattr(app, 'circuit_open'):
-        app.circuit_open = False
-        app.circuit_open_time = None
-        app.failure_count = 0
-
-    circuit_breaker_timeout = 60  # seconds
-    failure_threshold = 3
-
     try:
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        max_retries = 3
-        retry_delay = 1  # seconds
+        r = requests.get(f"{mock_api_base}/data", timeout=3)
+        latency = time.time() - start
 
-        if app.circuit_open and app.circuit_open_time and time.time() - app.circuit_open_time < circuit_breaker_timeout:
-            result = {
-                "status": "error",
-                "error_code": error_code,
-                "detail": "circuit_breaker_open",
-                "latency": "0.00s",
-            }
-            return render_template(
-                "page/test_fault.html",
-                flask_ver=version("flask"),
-                python_ver=PYTHON_VER,
-                debug=DEBUG,
-                enable_fault_injection=True,
-                result=result,
-            ), 503  # Service Unavailable
+        current_app.logger.info(f"external_call_latency={latency:.2f}")
 
-        for attempt in range(max_retries):
-            try:
-                r = requests.get(f"{mock_api_base}/data", timeout=3)
-                latency = time.time() - start
-
-                app.logger.info(f"external_call_latency={latency:.2f}")
-
-                r.raise_for_status()
-                result = {
-                    "status": "ok",
-                    "error_code": None,
-                    "data": r.json(),
-                    "latency": f"{latency:.2f}s",
-                }
-                # Reset failure count upon success
-                app.failure_count = 0
-                break  # If successful, break the retry loop
-            except requests.exceptions.RequestException as e:
-                app.failure_count += 1
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-
-                    app.logger.warning(f"Retrying after exception: {e}")
-                else:
-                    raise  # If all retries failed, raise the exception
+        r.raise_for_status()
+        result = {
+            "status": "ok",
+            "error_code": None,
+            "data": r.json(),
+            "latency": f"{latency:.2f}s",
+        }
 
     except requests.exceptions.Timeout:
         latency = time.time() - start
@@ -151,7 +103,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        app.logger.error(msg)
+        current_app.logger.error(msg)
 
     except requests.exceptions.HTTPError:
         latency = time.time() - start
@@ -168,7 +120,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        app.logger.error(msg)
+        current_app.logger.error(msg)
 
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
@@ -185,10 +137,9 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        app.logger.error(msg)
+        current_app.logger.error(msg)
 
     except Exception as e:
-        # General exception handling
         latency = time.time() - start
         result = {
             "status": "error",
@@ -202,16 +153,7 @@ def test_fault_external_api():
         )
         print(msg, file=sys.stderr)
 
-        app.logger.error(msg)
-
-    finally:
-        if result["status"] == "error" and result["error_code"] == error_code:
-            if app.failure_count >= failure_threshold:
-                app.circuit_open = True
-                app.circuit_open_time = time.time()
-
-                app.logger.warning("Circuit breaker opened")
-
+        current_app.logger.error(msg)
 
     return render_template(
         "page/test_fault.html",
@@ -230,11 +172,30 @@ def test_fault_db_timeout():
 
     start = time.time()
 
-    # Simulate a database timeout by sleeping for 5 seconds
-    time.sleep(5)
+    try:
+        db.session.execute(text("SELECT pg_sleep(5)"))
+        latency = time.time() - start
+        result = {
+            "status": "ok",
+            "error_code": None,
+            "latency": f"{latency:.2f}s",
+        }
+    except Exception as e:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": str(e)[:200],
+            "latency": f"{latency:.2f}s",
+        }
 
-    latency = time.time() - start
-    result = {"status": "ok", "error_code": None, "latency": f"{latency:.2f}s"}
+        msg = (
+            f"{error_code} route=/test-fault/db-timeout "
+            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+
+        current_app.logger.error(msg)
 
     return render_template(
         "page/test_fault.html",
@@ -243,4 +204,4 @@ def test_fault_db_timeout():
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
-    ), 200
+    ), (500 if result["status"] == "error" else 200)
