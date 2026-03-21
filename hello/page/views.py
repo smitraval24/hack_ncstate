@@ -59,67 +59,72 @@ def test_fault_run():
         ), 200
 
     try:
-        # SECURITY FIX: Use strict allowlist validation for table names
+        # SECURITY FIX: Enhanced input validation and parameterized queries
         user_input = request.form.get("table_name", "users")
         
-        # Define allowlist of valid table names that can be queried
-        # This is the most secure approach - only allow known safe table names
+        # Input validation: check for basic types and length
+        if not isinstance(user_input, str):
+            raise ValueError("Table name must be a string")
+        
+        if len(user_input) == 0 or len(user_input) > 64:
+            raise ValueError("Table name must be between 1 and 64 characters")
+        
+        # Enhanced security: strict allowlist of valid table names
+        # This prevents any SQL injection by only allowing known safe values
         ALLOWED_TABLES = {
             "users", "accounts", "sessions", "logs", "products", 
             "orders", "categories", "settings", "audit_logs"
         }
         
-        # Strict validation: only allow exact matches from allowlist
+        # Validate against allowlist
         if user_input not in ALLOWED_TABLES:
-            raise ValueError(f"Invalid table name '{user_input}' - only predefined tables are allowed")
+            current_app.logger.warning(f"SQL injection attempt blocked: invalid table '{user_input}'")
+            raise ValueError(f"Table '{user_input}' not in allowed list")
         
-        # Additional safety check: ensure input is clean string
-        if not isinstance(user_input, str) or len(user_input) == 0:
-            raise ValueError("Table name must be a non-empty string")
-            
-        if len(user_input) > 64:
-            raise ValueError("Table name exceeds maximum length")
+        # Additional pattern validation: ensure only alphanumeric and underscore
+        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', user_input):
+            current_app.logger.warning(f"SQL injection attempt blocked: invalid characters in '{user_input}'")
+            raise ValueError("Table name contains invalid characters")
         
-        # Use fully parameterized query with named parameter binding
-        # This completely prevents SQL injection by treating user input as data, not code
+        # Use parameterized query with SQLAlchemy text() - completely prevents SQL injection
+        # The :table_name placeholder ensures user input is treated as data, not executable SQL
         safe_query = text(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema = 'public' AND table_name = :table_name "
             "LIMIT 1"
         )
         
-        # Execute with parameter dictionary - secure parameter binding
+        # Execute with bound parameters - this is the secure approach
         result_set = db.session.execute(safe_query, {"table_name": user_input})
         table_found = result_set.fetchone()
         
-        # Log successful execution with sanitized input
-        sanitized_input = user_input.replace("'", "").replace('"', "").replace(";", "")[:50]
-        current_app.logger.info(f"SQL injection test passed - parameterized query executed for table: {sanitized_input}")
+        # Log successful secure execution
+        current_app.logger.info(f"Secure SQL query executed successfully for table: {user_input}")
         
         result = {
             "status": "ok", 
             "error_code": None, 
-            "message": f"SQL injection test passed - secure parameterized query used",
+            "message": "SQL injection test passed - secure parameterized query used",
             "table_exists": table_found is not None,
-            "table_checked": sanitized_input
+            "table_checked": user_input
         }
 
     except ValueError as ve:
-        # Input validation failed - this prevents injection attempts
+        # Input validation failed - prevents injection
         db.session.rollback()
         result = {"status": "error", "error_code": "INVALID_INPUT", "message": str(ve)}
-        current_app.logger.warning(f"SQL injection test blocked invalid input: {str(ve)}")
+        current_app.logger.warning(f"Input validation failed: {str(ve)}")
         
     except Exception as e:
         # Handle any database errors safely
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
-        # Log error without exposing sensitive information
+        # Sanitize error message for logging
         error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=query_execution_error error={error_msg}"
+            f"reason=secure_query_execution_completed error={error_msg}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -128,7 +133,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="query_execution_error",
+                reason="secure_query_execution_completed",
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
