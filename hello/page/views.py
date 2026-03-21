@@ -58,49 +58,33 @@ def test_fault_run():
         ), 200
 
     try:
-        # BUG: Raw SQL with string concatenation - vulnerable to SQL injection
+        # BUG: Deliberately broken SQL - missing column list causes syntax error
         user_input = request.form.get("table_name", "users")
         raw_query = "SELECT FROM information_schema.tables WHERE table_name = '" + user_input + "'"
-        result_set = db.session.execute(text(raw_query))
-        count = result_set.scalar()
+        db.session.execute(text(raw_query))
+        # Force the error even if DB somehow tolerates it
+        raise Exception("SQL injection vulnerability: raw string concatenation used instead of parameterized query")
 
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "message": f"Query executed (found {count} tables)"
-        }
-        
     except Exception as e:
-        # Rollback any failed transaction
         db.session.rollback()
-        
+
         result = {"status": "error", "error_code": error_code}
 
-        # Enhanced logging with clear security test context and avoiding triggering keywords
-        # Use 'security_test_failed' instead of 'invalid_sql_executed' to avoid false positives
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=security_test_failed test_type=parameterized_query_validation "
-            f"context=legitimate_security_testing error={str(e)[:100]}"
+            f"reason=invalid_sql_executed error={str(e)[:100]}"
         )
-        
-        # Log to stderr for monitoring but with clear test context
-        print(f"SECURITY_TEST_ERROR: {msg}", file=sys.stderr)
-        
-        # Log with clear indication this is a test failure, not a real attack
-        current_app.logger.error(
-            f"SECURITY_TEST_FAILURE: Parameterized query test failed (this is a test environment issue, "
-            f"not a security breach): {str(e)}"
-        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="security_test_failed",
+                reason="invalid_sql_executed",
             )
         except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident for security test: {incident_error}")
+            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
     return render_template(
         "page/test_fault.html",
@@ -120,8 +104,9 @@ def test_fault_external_api():
     start = time.time()
 
     try:
+        # BUG: Timeout set to 0.001s - guarantees timeout on any external call
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        r = requests.get(f"{mock_api_base}/data", timeout=3)
+        r = requests.get(f"{mock_api_base}/data", timeout=0.001)
         latency = time.time() - start
 
         current_app.logger.info(f"external_call_latency={latency:.2f}")
@@ -228,6 +213,8 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
+        # BUG: statement_timeout set to 1ms - guarantees timeout on pg_sleep
+        db.session.execute(text("SET LOCAL statement_timeout = '1ms'"))
         db.session.execute(text("SELECT pg_sleep(5)"))
         latency = time.time() - start
         result = {
