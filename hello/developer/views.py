@@ -373,18 +373,33 @@ def get_dashboard_metrics(incidents: list[dict] | None = None):
     ])
 
     # Calculate auto-resolution rate
+    # An incident counts as auto-resolved if:
+    # - verification.success is True, OR
+    # - it has a remediation action_type set (system took automated action)
     resolved_incidents = [i for i in incidents if i.get("status") == "resolved"]
-    auto_resolved_count = len(
-        [i for i in resolved_incidents if (i.get("verification") or {}).get("success")]
-    )
-    auto_resolution_rate = (auto_resolved_count / len(resolved_incidents) * 100) if resolved_incidents else 0
+    auto_resolved_count = 0
+    for i in resolved_incidents:
+        verification = i.get("verification") or {}
+        remediation = i.get("remediation") or {}
+        if verification.get("success") is True:
+            auto_resolved_count += 1
+        elif remediation.get("action_type") and remediation["action_type"] not in (
+            "pending_analysis", None
+        ):
+            auto_resolved_count += 1
+    total_incidents_for_rate = len(incidents) if incidents else 1
+    auto_resolution_rate = (auto_resolved_count / total_incidents_for_rate * 100) if incidents else 0
 
     # Calculate MTTR (Mean Time To Remediate)
     resolution_times = []
     for incident in resolved_incidents:
-        if incident.get("timestamp_resolved"):
-            delta = incident["timestamp_resolved"] - incident["timestamp_opened"]
-            resolution_times.append(delta.total_seconds() / 60)  # minutes
+        opened = incident.get("timestamp_opened")
+        resolved = incident.get("timestamp_resolved")
+        if opened and resolved:
+            delta = resolved - opened
+            minutes = delta.total_seconds() / 60
+            if minutes >= 0:
+                resolution_times.append(minutes)
 
     mttr = sum(resolution_times) / len(resolution_times) if resolution_times else 0
 
@@ -395,6 +410,34 @@ def get_dashboard_metrics(incidents: list[dict] | None = None):
         "auto_resolution_rate": round(auto_resolution_rate, 1),
         "mttr": round(mttr, 1),
         "total_incidents": len(incidents)
+    }
+
+
+def build_incident_trend(incidents: list[dict], days: int = 7) -> dict:
+    """Build detected/resolved counts for the trailing time window."""
+    today = datetime.now().date()
+    date_window = [today - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+    detected_counts = {day: 0 for day in date_window}
+    resolved_counts = {day: 0 for day in date_window}
+
+    for incident in incidents:
+        opened_at = incident.get("timestamp_opened")
+        resolved_at = incident.get("timestamp_resolved")
+
+        if opened_at:
+            opened_date = opened_at.date()
+            if opened_date in detected_counts:
+                detected_counts[opened_date] += 1
+
+        if resolved_at:
+            resolved_date = resolved_at.date()
+            if resolved_date in resolved_counts:
+                resolved_counts[resolved_date] += 1
+
+    return {
+        "labels": [f"{day.strftime('%b')} {day.day}" for day in date_window],
+        "detected": [detected_counts[day] for day in date_window],
+        "resolved": [resolved_counts[day] for day in date_window],
     }
 
 
@@ -417,33 +460,88 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
     return incidents
 
 
+def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
+    """Merge live and CloudWatch incidents, deduplicating across sources.
+
+    CloudWatch incidents that match a live incident by (error_code, route)
+    replace the live one if they have more lifecycle progress. Live incidents
+    with no CloudWatch match are kept as-is, and vice versa.
+    """
+    _STATUS_RANK = {"detected": 0, "in_progress": 1, "resolved": 2}
+
+    # Index CloudWatch incidents by (error_code, route) for matching
+    cw_by_key: dict[tuple[str, str], list[dict]] = {}
+    for inc in cloudwatch:
+        key = (inc.get("error_code", ""), inc.get("route", ""))
+        cw_by_key.setdefault(key, []).append(inc)
+
+    merged: list[dict] = []
+    matched_cw_keys: set[tuple[str, str]] = set()
+
+    for live_inc in live:
+        key = (live_inc.get("error_code", ""), live_inc.get("route", ""))
+        cw_matches = cw_by_key.get(key, [])
+        if cw_matches:
+            matched_cw_keys.add(key)
+            # Pick the CloudWatch incident with the most progress
+            best_cw = max(
+                cw_matches,
+                key=lambda i: _STATUS_RANK.get(i.get("status", ""), 0),
+            )
+            cw_rank = _STATUS_RANK.get(best_cw.get("status", ""), 0)
+            live_rank = _STATUS_RANK.get(live_inc.get("status", ""), 0)
+            # Use the more progressed one; if tied, prefer CloudWatch (richer data)
+            merged.append(best_cw if cw_rank >= live_rank else live_inc)
+        else:
+            merged.append(live_inc)
+
+    # Add CloudWatch incidents that had no live match
+    for key, cw_list in cw_by_key.items():
+        if key not in matched_cw_keys:
+            merged.extend(cw_list)
+
+    merged.sort(
+        key=lambda i: i.get("timestamp_opened") or datetime.min,
+        reverse=True,
+    )
+    return merged
+
+
 def _fetch_incidents() -> tuple[list[dict], str, str | None]:
-    """Fetch incidents from live store, CloudWatch, or mock data.
+    """Fetch incidents from live store + CloudWatch (merged), or mock data.
 
     Returns (incidents, data_source, error_message).
-    Live incidents always take priority.
+    Live and CloudWatch incidents are merged; mock data is used only when
+    neither source has anything.
     """
-    # Always check live store first
+    # Always check live store
     try:
         live = get_live_incidents()
     except Exception:
         live = []
 
-    if live:
-        incidents, source = live, "live"
-    elif CLOUDWATCH_ENABLED:
+    cw_incidents: list[dict] = []
+    cw_error: str | None = None
+    if CLOUDWATCH_ENABLED:
         cw_incidents, cw_error = get_cloudwatch_incidents()
-        if not cw_error:
-            incidents, source = cw_incidents, "cloudwatch"
+
+    if live or cw_incidents:
+        incidents = _merge_incidents(live, cw_incidents)
+        if live and cw_incidents:
+            source = "live+cloudwatch"
+        elif live:
+            source = "live"
         else:
-            incidents, source = get_mock_incidents(), "mock"
-            incidents = _sync_status(incidents)
-            return incidents, source, cw_error
+            source = "cloudwatch"
+    elif cw_error:
+        incidents, source = get_mock_incidents(), "mock"
+        incidents = _sync_status(incidents)
+        return incidents, source, cw_error
     else:
         incidents, source = get_mock_incidents(), "mock"
 
     incidents = _sync_status(incidents)
-    return incidents, source, None
+    return incidents, source, cw_error
 
 
 @developer.get("/developer/incidents")
@@ -459,6 +557,7 @@ def incidents_dashboard():
     incidents, data_source, cloudwatch_error = _fetch_incidents()
 
     metrics = get_dashboard_metrics(incidents)
+    trend_data = build_incident_trend(incidents)
 
     # Drive the "Incident Types" chart from real data.
     type_counts = {
@@ -483,6 +582,7 @@ def incidents_dashboard():
         "developer/incidents.html",
         incidents=incidents,
         metrics=metrics,
+        trend_data=trend_data,
         data_source=data_source,
         cloudwatch_error=cloudwatch_error,
         cloudwatch_lookback_minutes=cloudwatch_lookback_minutes,
@@ -496,6 +596,7 @@ def incidents_api_data():
     incidents, data_source, _ = _fetch_incidents()
 
     metrics = get_dashboard_metrics(incidents)
+    trend_data = build_incident_trend(incidents)
 
     type_counts = {"external_api": 0, "db": 0, "sql": 0, "connection": 0}
     for inc in incidents:
@@ -526,6 +627,7 @@ def incidents_api_data():
 
     return jsonify({
         "metrics": metrics,
+        "trend_data": trend_data,
         "type_counts": type_counts,
         "incidents": serialized,
         "data_source": data_source,
