@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import re
 from importlib.metadata import version
 
 import requests
@@ -58,34 +59,46 @@ def test_fault_run():
         ), 200
 
     try:
-        # SECURITY FIX: Use parameterized query to prevent SQL injection
-        # This prevents user input from being directly concatenated into SQL strings
+        # SECURITY FIX: Comprehensive protection against SQL injection
         user_input = request.form.get("table_name", "users")
         
-        # Validate input to ensure it contains only alphanumeric characters and underscores
-        if not user_input.replace('_', '').isalnum():
-            raise ValueError("Invalid table name - only alphanumeric characters and underscores allowed")
+        # Enhanced input validation - only allow table names with letters, numbers, underscores
+        # and must start with a letter or underscore
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', user_input):
+            raise ValueError("Invalid table name - must start with letter/underscore and contain only alphanumeric characters and underscores")
         
-        # Use parameterized query with named parameter - this is the correct approach
-        parameterized_query = text("SELECT table_name FROM information_schema.tables WHERE table_name = :table_name LIMIT 1")
-        result_set = db.session.execute(parameterized_query, {"table_name": user_input})
+        # Additional length check to prevent excessively long input
+        if len(user_input) > 64:
+            raise ValueError("Table name too long - maximum 64 characters allowed")
+        
+        # Use parameterized query with SQLAlchemy text() - completely prevents SQL injection
+        # The :table_name parameter ensures user input is properly escaped
+        safe_query = text("SELECT table_name FROM information_schema.tables WHERE table_name = :table_name LIMIT 1")
+        
+        # Execute with parameters dictionary - this is the secure approach
+        result_set = db.session.execute(safe_query, {"table_name": user_input})
         
         # Fetch result to ensure query executes successfully
         table_found = result_set.fetchone()
         
         # Test passed - no vulnerability detected, using secure parameterized query
-        result = {"status": "ok", "error_code": None, "message": "SQL injection test passed - using secure parameterized query"}
-        current_app.logger.info("SQL injection test passed - using parameterized query with input validation")
+        result = {
+            "status": "ok", 
+            "error_code": None, 
+            "message": f"SQL injection test passed - secure parameterized query used for table: {user_input}",
+            "table_exists": table_found is not None
+        }
+        current_app.logger.info(f"SQL injection test passed - secure parameterized query executed for table: {user_input}")
 
     except ValueError as ve:
-        # Input validation failed
+        # Input validation failed - this prevents injection attempts
         db.session.rollback()
         result = {"status": "error", "error_code": "INVALID_INPUT", "message": str(ve)}
-        current_app.logger.warning(f"SQL injection test - input validation failed: {str(ve)}")
+        current_app.logger.warning(f"SQL injection test - input validation blocked potential injection: {str(ve)}")
         
     except Exception as e:
+        # Handle any database errors safely
         db.session.rollback()
-
         result = {"status": "error", "error_code": error_code}
 
         msg = (
