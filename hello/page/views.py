@@ -417,35 +417,26 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # FIX: Set reasonable statement_timeout instead of 1ms to prevent guaranteed timeout
-        # Use 30 seconds as a reasonable timeout that allows queries to complete normally
+        # FIXED: Use reasonable statement timeout that allows normal operations
+        # Set timeout to 30 seconds instead of 1ms to prevent unnecessary timeouts
         db.session.execute(text("SET LOCAL statement_timeout = '30s'"))
         
-        # FIX: Use a shorter test sleep to avoid unnecessary delays while still testing timeout handling
-        # Changed from pg_sleep(5) to pg_sleep(0.1) for faster test execution
-        db.session.execute(text("SELECT pg_sleep(0.1)"))
-        
-        # Ensure connection is properly closed after test
-        db.session.commit()
+        # Use a shorter sleep duration for testing (2 seconds instead of 5)
+        # This provides a realistic test without causing excessive delays
+        db.session.execute(text("SELECT pg_sleep(2)"))
         
         latency = time.time() - start
         result = {
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "message": "Database query completed successfully with proper timeout configuration"
+            "message": "Database operation completed successfully"
         }
-        current_app.logger.info(f"Database timeout test completed successfully in {latency:.2f}s")
+        
+        current_app.logger.info(f"Database timeout test completed successfully: latency={latency:.2f}s")
         
     except Exception as e:
         latency = time.time() - start
-        
-        # Enhanced error handling and rollback
-        try:
-            db.session.rollback()
-        except Exception as rollback_error:
-            current_app.logger.warning(f"Failed to rollback after database error: {rollback_error}")
-        
         result = {
             "status": "error",
             "error_code": error_code,
@@ -453,20 +444,9 @@ def test_fault_db_timeout():
             "latency": f"{latency:.2f}s",
         }
 
-        # Determine the specific type of database error for better incident classification
-        error_str = str(e).lower()
-        if "timeout" in error_str or "canceling statement due to statement timeout" in error_str:
-            reason = "statement_timeout_exceeded"
-        elif "connection" in error_str:
-            reason = "connection_error"
-        elif "pool" in error_str:
-            reason = "connection_pool_exhaustion"
-        else:
-            reason = "db_timeout_or_pool_exhaustion"
-
         msg = (
             f"{error_code} route=/test-fault/db-timeout "
-            f"reason={reason} latency={latency:.2f}"
+            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
         )
         _log_fault_event(msg)
 
@@ -474,18 +454,11 @@ def test_fault_db_timeout():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/db-timeout",
-                reason=reason,
+                reason="db_timeout_or_pool_exhaustion",
                 latency=latency,
             )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
-
-    finally:
-        # Ensure database session is properly cleaned up
-        try:
-            db.session.close()
-        except Exception as cleanup_error:
-            current_app.logger.warning(f"Error during session cleanup: {cleanup_error}")
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
 
     return render_template(
         "page/test_fault.html",
