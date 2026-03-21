@@ -1,3 +1,5 @@
+/* This file keeps the esbuild.config script for the assets part of the project. */
+
 import * as esbuild from 'esbuild'
 import copyStaticFiles from 'esbuild-copy-static-files'
 

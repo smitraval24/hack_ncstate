@@ -17,6 +17,9 @@ FAULT_CODES = {
     "FAULT_DB_TIMEOUT"
 }
 
+ROUTE_RE = re.compile(r"\broute=([^\s]+)")
+REASON_RE = re.compile(r"\breason=([^\s]+)")
+
 # ==============================
 
 def decode_cw_payload(event: dict) -> dict:
@@ -34,12 +37,27 @@ def build_incident(le, log_group, log_stream):
     msg = le.get("message", "").strip()
     ts_ms = le.get("timestamp")
     return {
+        "event_id": le.get("id"),
         "fault_code": extract_fault_code(msg),
         "timestamp": datetime.fromtimestamp(ts_ms/1000, tz=timezone.utc).isoformat(),
         "log_group": log_group,
         "log_stream": log_stream,
         "raw_message": msg
     }
+
+
+def incident_dedupe_key(incident: dict) -> str | None:
+    fault_code = incident.get("fault_code")
+    if not fault_code:
+        return None
+
+    msg = incident.get("raw_message", "")
+    route_match = ROUTE_RE.search(msg)
+    reason_match = REASON_RE.search(msg)
+    route = route_match.group(1) if route_match else "-"
+    reason = reason_match.group(1) if reason_match else "-"
+
+    return "|".join((fault_code, route, reason))
 
 def backboard_message(thread_id: str, content: str) -> dict:
     url = f"{BACKBOARD_BASE_URL}/threads/{thread_id}/messages"
@@ -116,10 +134,13 @@ BACKBOARD_ANALYSIS:
 The repository has the following key file you must use when pushing fixes:
 - hello/page/views.py  (no leading slash)
 
+IMPORTANT: Your commit message MUST start with "[FAULT:{incident['fault_code']}]" so the CI/CD pipeline can track this fix.
+For example: "[FAULT:{incident['fault_code']}] Fix SQL injection vulnerability in views.py"
+
 Steps you MUST follow:
 1. First call read_github_file to read the actual content of hello/page/views.py
 2. Analyze the file content and identify the vulnerability
-3. Call push_github_fix with the complete fixed file content
+3. Call push_github_fix with the complete fixed file content (commit message MUST start with [FAULT:...])
 4. Report what you changed"""
         }
     ]
@@ -210,12 +231,19 @@ def lambda_handler(event, context):
     cw = decode_cw_payload(event)
     log_group = cw.get("logGroup")
     log_stream = cw.get("logStream")
+    processed_incidents = set()
 
     for le in cw.get("logEvents", []):
         inc = build_incident(le, log_group, log_stream)
 
         if not inc["fault_code"]:
             continue
+
+        dedupe_key = incident_dedupe_key(inc)
+        if dedupe_key in processed_incidents:
+            print(f"SKIP duplicate incident in batch: {dedupe_key}")
+            continue
+        processed_incidents.add(dedupe_key)
 
         try:
             # 1️⃣ Send incident to Backboard thread → get RAG analysis
@@ -234,7 +262,32 @@ def lambda_handler(event, context):
             agent_output = invoke_claude(inc, analysis)
             print("CLAUDE_OUTPUT:", agent_output[:4000])
 
-            # 3️⃣ Post remediation back to Backboard thread
+            # 3️⃣ Record pending remediation on dashboard so the pipeline
+            #    callback (GitHub Actions) can resolve it after deploy.
+            dashboard_url = os.environ.get("DASHBOARD_URL", "")
+            if dashboard_url:
+                try:
+                    route_match = ROUTE_RE.search(inc.get("raw_message", ""))
+                    reason_match = REASON_RE.search(inc.get("raw_message", ""))
+                    record_body = json.dumps({
+                        "fault_code": inc["fault_code"],
+                        "route": route_match.group(1) if route_match else "",
+                        "reason": reason_match.group(1) if reason_match else "",
+                        "rag_analysis": json.dumps(analysis)[:2000],
+                        "claude_output": agent_output[:2000],
+                    }).encode("utf-8")
+                    req = urllib.request.Request(
+                        f"{dashboard_url}/developer/incidents/pipeline/pending",
+                        data=record_body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    urllib.request.urlopen(req, timeout=10)
+                    print(f"DASHBOARD: recorded pending remediation for {inc['fault_code']}")
+                except Exception as e:
+                    print(f"DASHBOARD_RECORD_ERROR: {e}")
+
+            # 4️⃣ Post remediation back to Backboard thread
             backboard_message(
                 HARDCODED_THREAD_ID,
                 f"Remediation applied for {inc['fault_code']}:\n{agent_output}",

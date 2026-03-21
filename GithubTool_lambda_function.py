@@ -1,3 +1,5 @@
+"""This file handles the github tool lambda function logic for the hack ncstate part of the project."""
+
 import base64
 import json
 import os
@@ -7,11 +9,13 @@ import boto3
 secrets = boto3.client("secretsmanager")
 GITHUB_API = "https://api.github.com"
 
+# This function gets the token data the rest of the code needs.
 def get_token():
     arn = os.environ["GITHUB_SECRET_ARN"]
     sec = secrets.get_secret_value(SecretId=arn)["SecretString"]
     return json.loads(sec)["GITHUB_TOKEN"]
 
+# This function handles the gh request work for this file.
 def gh_request(method: str, path: str, body=None):
     token = get_token()
     url = f"{GITHUB_API}{path}"
@@ -32,6 +36,7 @@ def gh_request(method: str, path: str, body=None):
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read().decode("utf-8"))
 
+# This function handles the lambda handler work for this file.
 def lambda_handler(event, context):
     print(json.dumps(event))
 
@@ -62,6 +67,31 @@ def lambda_handler(event, context):
 
             existing = gh_request("GET", f"/repos/{owner}/{repo}/contents/{file_path}?ref={branch}")
             file_sha = existing["sha"]
+            existing_content = base64.b64decode(existing["content"]).decode("utf-8")
+            normalized_existing = existing_content.rstrip("\n")
+            normalized_requested = file_content.rstrip("\n")
+
+            if normalized_existing == normalized_requested:
+                result = {
+                    "ok": True,
+                    "commit_sha": None,
+                    "branch": branch,
+                    "no_change": True
+                }
+                return {
+                    "messageVersion": "1.0",
+                    "response": {
+                        "actionGroup": event["actionGroup"],
+                        "function": event["function"],
+                        "functionResponse": {
+                            "responseBody": {
+                                "TEXT": {
+                                    "body": json.dumps(result)
+                                }
+                            }
+                        }
+                    }
+                }
 
             content_b64 = base64.b64encode(file_content.encode("utf-8")).decode("utf-8")
 

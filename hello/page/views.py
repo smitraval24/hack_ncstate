@@ -18,6 +18,11 @@ page = Blueprint("page", __name__, template_folder="templates")
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 
 
+def _log_fault_event(message: str) -> None:
+    """Emit a single structured fault log line for CloudWatch subscribers."""
+    current_app.logger.error(message)
+
+
 @page.get("/")
 def home():
     return render_template(
@@ -126,8 +131,7 @@ def test_fault_run():
             f"{error_code} route=/test-fault/run "
             f"reason=secure_query_execution_completed error={error_msg}"
         )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
+        _log_fault_event(msg)
 
         try:
             create_live_incident(
@@ -347,8 +351,57 @@ def test_fault_external_api():
             "detail": str(ve),
             "latency": f"{total_latency:.2f}s",
         }
+<<<<<<< HEAD
         current_app.logger.error(f"Configuration error: {str(ve)}")
         
+=======
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=external_timeout latency={latency:.2f}"
+        )
+        _log_fault_event(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="external_timeout", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
+
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=upstream_failure latency={latency:.2f}"
+        )
+        _log_fault_event(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="upstream_failure", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
+
+    except requests.exceptions.ConnectionError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "connection_refused",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=connection_error latency={latency:.2f}"
+        )
+        _log_fault_event(msg)
+        try:
+            create_live_incident(error_code=error_code, route="/test-fault/external-api", reason="connection_error", latency=latency)
+        except Exception:
+            current_app.logger.exception("Failed to create live incident")
+
+>>>>>>> 58be736 (resolving multiple self healing loop runs)
     except Exception as e:
         # Handle unexpected errors in the endpoint itself
         total_latency = time.time() - overall_start
@@ -362,9 +415,13 @@ def test_fault_external_api():
             f"{error_code} route=/test-fault/external-api "
             f"reason=endpoint_exception latency={total_latency:.2f}"
         )
+<<<<<<< HEAD
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
         
+=======
+        _log_fault_event(msg)
+>>>>>>> 58be736 (resolving multiple self healing loop runs)
         try:
             create_live_incident(
                 error_code=error_code,
@@ -415,8 +472,7 @@ def test_fault_db_timeout():
             f"{error_code} route=/test-fault/db-timeout "
             f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
         )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
+        _log_fault_event(msg)
 
         try:
             create_live_incident(

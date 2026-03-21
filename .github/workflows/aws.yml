@@ -105,6 +105,19 @@ jobs:
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
 
+    # Extract fault codes from commit messages for pipeline callback.
+    # Commits from the Lambda include "[FAULT:CODE]" tags.
+    - name: Extract fault codes from commit
+      id: faults
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        echo "commit_msg=$COMMIT_MSG"
+        # Extract all [FAULT:...] tags from the commit message
+        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
+        echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
+        echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+        echo "Extracted fault codes: $CODES"
+
     # Ensure jq is available
     - name: Install jq
       run: sudo apt-get update && sudo apt-get install -y jq
@@ -131,3 +144,53 @@ jobs:
               --region $AWS_REGION
           fi
         done
+
+    # Notify dashboard: deploy succeeded → resolve matching incidents
+    - name: Notify dashboard - deploy success
+      if: steps.faults.outputs.has_faults == 'true'
+      env:
+        DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+      run: |
+        echo "Notifying dashboard of successful deploy..."
+        curl -sf -X POST "$DASHBOARD_URL/developer/incidents/pipeline/callback" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"fault_codes\": ${{ steps.faults.outputs.fault_codes }},
+            \"status\": \"success\",
+            \"commit_sha\": \"${{ github.sha }}\",
+            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }" || echo "Warning: dashboard callback failed (non-fatal)"
+
+  # Separate job to handle deploy failure notification
+  notify-failure:
+    name: Notify deploy failure
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: failure()
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Extract fault codes from commit
+      id: faults
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
+        echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
+        echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+    - name: Notify dashboard - deploy failed
+      if: steps.faults.outputs.has_faults == 'true'
+      env:
+        DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+      run: |
+        echo "Notifying dashboard of failed deploy..."
+        curl -sf -X POST "$DASHBOARD_URL/developer/incidents/pipeline/callback" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"fault_codes\": ${{ steps.faults.outputs.fault_codes }},
+            \"status\": \"failure\",
+            \"commit_sha\": \"${{ github.sha }}\",
+            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
+            \"deploy_error\": \"ECS deployment failed or service did not stabilize\"
+          }" || echo "Warning: dashboard callback failed (non-fatal)"

@@ -17,6 +17,7 @@ from hello.incident.live_store import (
     get_all_incidents as get_live_incidents,
     get_incident as get_live_incident,
     reset_all as reset_live_incidents,
+    update_incident as update_live_incident,
 )
 
 logger = logging.getLogger(__name__)
@@ -775,3 +776,110 @@ def reset_incidents():
     except Exception as e:
         logger.exception("Failed to reset incidents")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Pipeline callback endpoints (called by Lambda + GitHub Actions)
+# ---------------------------------------------------------------------------
+
+@developer.post("/developer/incidents/pipeline/pending")
+def pipeline_pending():
+    """Called by the Lambda after Claude pushes a fix but before deploy.
+
+    Updates matching live incidents to 'in_progress' and stores the RAG
+    analysis and Claude output so the dashboard shows remediation is underway.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    fault_code = data.get("fault_code", "")
+    if not fault_code:
+        return jsonify({"success": False, "error": "fault_code required"}), 400
+
+    updated = []
+    for inc in get_live_incidents():
+        if inc.get("error_code") == fault_code and inc.get("status") == "detected":
+            result = update_live_incident(inc["id"], {
+                "status": "in_progress",
+                "root_cause": {
+                    "source": "rag",
+                    "confidence_score": None,
+                    "explanation": data.get("rag_analysis", ""),
+                },
+                "remediation": {
+                    "action_type": "auto_fix_pushed",
+                    "parameters": {"claude_output": data.get("claude_output", "")},
+                    "execution_timestamp": datetime.now(),
+                },
+            })
+            if result:
+                updated.append(inc["id"])
+
+    logger.info("Pipeline pending: updated %s for %s", updated, fault_code)
+    return jsonify({"success": True, "updated": updated})
+
+
+@developer.post("/developer/incidents/pipeline/callback")
+def pipeline_callback():
+    """Called by GitHub Actions after deploy succeeds or fails.
+
+    Expects JSON body::
+
+        {
+            "fault_codes": ["FAULT_SQL_INJECTION_TEST"],
+            "status": "success" | "failure",
+            "commit_sha": "abc123",
+            "run_url": "https://github.com/.../actions/runs/123",
+            "deploy_error": ""  // only on failure
+        }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    fault_codes = data.get("fault_codes", [])
+    pipeline_status = data.get("status", "")
+    now = datetime.now()
+
+    if not fault_codes:
+        return jsonify({"success": False, "error": "fault_codes required"}), 400
+    if pipeline_status not in ("success", "failure"):
+        return jsonify({"success": False, "error": "status must be 'success' or 'failure'"}), 400
+
+    updated = []
+    for inc in get_live_incidents():
+        if inc.get("error_code") not in fault_codes:
+            continue
+        if inc.get("status") == "resolved":
+            continue
+
+        if pipeline_status == "success":
+            updates = {
+                "status": "resolved",
+                "timestamp_resolved": now,
+                "verification": {
+                    "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                    "error_rate_after": 0,
+                    "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_after": 0,
+                    "health_check_status": "passed",
+                    "success": True,
+                },
+            }
+        else:
+            updates = {
+                "status": "in_progress",
+                "verification": {
+                    "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                    "error_rate_after": None,
+                    "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_after": None,
+                    "health_check_status": "failed",
+                    "success": False,
+                },
+            }
+
+        result = update_live_incident(inc["id"], updates)
+        if result:
+            updated.append(inc["id"])
+
+    logger.info(
+        "Pipeline callback (%s): updated %s for %s",
+        pipeline_status, updated, fault_codes,
+    )
+    return jsonify({"success": True, "status": pipeline_status, "updated": updated})

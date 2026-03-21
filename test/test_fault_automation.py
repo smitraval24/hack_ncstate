@@ -1,0 +1,113 @@
+import importlib
+import json
+import os
+
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+
+fault_router_lambda = importlib.import_module("fault_router_lambda_function")
+github_tool_lambda = importlib.import_module("GithubTool_lambda_function")
+
+
+def test_incident_dedupe_key_ignores_latency_for_same_fault_route_and_reason():
+    first = fault_router_lambda.build_incident(
+        {
+            "id": "evt-1",
+            "timestamp": 1_700_000_000_000,
+            "message": (
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=external_timeout latency=0.01"
+            ),
+        },
+        "/ecs/cream-task",
+        "ecs/app/1",
+    )
+    second = fault_router_lambda.build_incident(
+        {
+            "id": "evt-2",
+            "timestamp": 1_700_000_005_000,
+            "message": (
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=external_timeout latency=3.42"
+            ),
+        },
+        "/ecs/cream-task",
+        "ecs/app/1",
+    )
+
+    assert fault_router_lambda.incident_dedupe_key(first) == (
+        "FAULT_EXTERNAL_API_LATENCY|/test-fault/external-api|external_timeout"
+    )
+    assert fault_router_lambda.incident_dedupe_key(first) == (
+        fault_router_lambda.incident_dedupe_key(second)
+    )
+
+
+def test_incident_dedupe_key_keeps_distinct_reasons_separate():
+    timeout_incident = fault_router_lambda.build_incident(
+        {
+            "id": "evt-1",
+            "timestamp": 1_700_000_000_000,
+            "message": (
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=external_timeout latency=0.01"
+            ),
+        },
+        "/ecs/cream-task",
+        "ecs/app/1",
+    )
+    http_incident = fault_router_lambda.build_incident(
+        {
+            "id": "evt-2",
+            "timestamp": 1_700_000_005_000,
+            "message": (
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=upstream_failure latency=0.50"
+            ),
+        },
+        "/ecs/cream-task",
+        "ecs/app/1",
+    )
+
+    assert fault_router_lambda.incident_dedupe_key(timeout_incident) != (
+        fault_router_lambda.incident_dedupe_key(http_incident)
+    )
+
+
+def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    unchanged_content = "print('already fixed')\n"
+
+    def fake_gh_request(method, path, body=None):
+        assert method == "GET"
+        assert body is None
+        return {
+            "sha": "abc123",
+            "content": github_tool_lambda.base64.b64encode(
+                unchanged_content.encode("utf-8")
+            ).decode("utf-8"),
+        }
+
+    monkeypatch.setattr(github_tool_lambda, "gh_request", fake_gh_request)
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "parameters": [
+                {"name": "file_path", "value": "hello/page/views.py"},
+                {"name": "file_content", "value": unchanged_content},
+                {"name": "commit_message", "value": "No-op fix"},
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is True
+    assert body["no_change"] is True
+    assert body["commit_sha"] is None
