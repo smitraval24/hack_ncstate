@@ -4,7 +4,6 @@ import os
 import sys
 import time
 import logging
-import re
 from importlib.metadata import version
 
 import requests
@@ -55,7 +54,7 @@ def test_fault():
 @page.post("/test-fault/run")
 def test_fault_run():
     error_code = "FAULT_SQL_INJECTION_TEST"
-    result = {"status": "ok", "error_code": None}
+    result = {"status": "error", "error_code": error_code}
 
     # Check if fault injection is enabled before proceeding
     if not ENABLE_FAULT_INJECTION:
@@ -71,72 +70,13 @@ def test_fault_run():
         ), 200
 
     try:
-        # SECURITY FIX: Enhanced input validation and parameterized queries
-        user_input = request.form.get("table_name", "users")
-        
-        # Input validation: check for basic types and length
-        if not isinstance(user_input, str):
-            raise ValueError("Table name must be a string")
-        
-        if len(user_input) == 0 or len(user_input) > 64:
-            raise ValueError("Table name must be between 1 and 64 characters")
-        
-        # Enhanced security: strict allowlist of valid table names
-        # This prevents any SQL injection by only allowing known safe values
-        ALLOWED_TABLES = {
-            "users", "accounts", "sessions", "logs", "products", 
-            "orders", "categories", "settings", "audit_logs"
-        }
-        
-        # Validate against allowlist
-        if user_input not in ALLOWED_TABLES:
-            current_app.logger.warning(f"SQL injection attempt blocked: invalid table '{user_input}'")
-            raise ValueError(f"Table '{user_input}' not in allowed list")
-        
-        # Additional pattern validation: ensure only alphanumeric and underscore
-        if not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', user_input):
-            current_app.logger.warning(f"SQL injection attempt blocked: invalid characters in '{user_input}'")
-            raise ValueError("Table name contains invalid characters")
-        
-        # Use parameterized query with SQLAlchemy text() - completely prevents SQL injection
-        # The :table_name placeholder ensures user input is treated as data, not executable SQL
-        safe_query = text(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema = 'public' AND table_name = :table_name "
-            "LIMIT 1"
-        )
-        
-        # Execute with bound parameters - this is the secure approach
-        result_set = db.session.execute(safe_query, {"table_name": user_input})
-        table_found = result_set.fetchone()
-        
-        # Log successful secure execution
-        current_app.logger.info(f"Secure SQL query executed successfully for table: {user_input}")
-        
-        result = {
-            "status": "ok", 
-            "error_code": None, 
-            "message": "SQL injection test passed - secure parameterized query used",
-            "table_exists": table_found is not None,
-            "table_checked": user_input
-        }
-
-    except ValueError as ve:
-        # Input validation failed - prevents injection
-        db.session.rollback()
-        result = {"status": "error", "error_code": "INVALID_INPUT", "message": str(ve)}
-        current_app.logger.warning(f"Input validation failed: {str(ve)}")
-        
+        db.session.execute(text("SELECT FROM"))
     except Exception as e:
-        # Handle any database errors safely
         db.session.rollback()
-        result = {"status": "error", "error_code": error_code}
-
-        # Sanitize error message for logging
         error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=secure_query_execution_completed error={error_msg}"
+            f"reason=invalid_sql_executed error={error_msg}"
         )
         _log_fault_event(msg)
 
@@ -144,7 +84,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="secure_query_execution_completed",
+                reason="invalid_sql_executed",
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
