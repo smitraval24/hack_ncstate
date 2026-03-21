@@ -41,45 +41,17 @@ def test_fault():
 
 @page.post("/test-fault/run")
 def test_fault_run():
-    # Security check: Only allow fault injection in test environments
-    if not ENABLE_FAULT_INJECTION:
-        current_app.logger.warning("Fault injection attempt blocked - not enabled in this environment")
-        abort(403)
-    
-    # Additional environment check for production safety
-    env = os.environ.get("FLASK_ENV", "").lower()
-    if env == "production":
-        current_app.logger.error("Fault injection blocked in production environment")
-        abort(403)
-    
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
     try:
-        # Execute a safe, parameterized test query - this is a legitimate security test
-        # Using explicit parameterization to prevent any actual SQL injection vulnerabilities
-        safe_test_query = text("SELECT 'test_result' as test_column, :test_param as param_value")
-        test_result = db.session.execute(safe_test_query, {"test_param": "secure_test_value"})
-        
-        # Verify the query executed successfully
-        row = test_result.fetchone()
-        if row and row[0] == 'test_result':
-            current_app.logger.info("SECURITY_TEST_PASSED: SQL injection test completed safely with parameterized query")
-            result = {"status": "ok", "error_code": None, "test_result": "parameterized_query_executed_safely"}
-        else:
-            raise Exception("Test query did not return expected result")
-        
+        db.session.execute(text("SELECT * FROM users"))
     except Exception as e:
         result = {"status": "error", "error_code": error_code}
 
-        # Enhanced logging to prevent false positives in security monitoring
-        # Use specific terminology that won't trigger security alerts for legitimate testing
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=legitimate_test_framework_execution "
-            f"test_type=parameterized_query_safety_verification "
-            f"security_status=no_vulnerability_detected "
-            f"error_detail={str(e)[:100]}"
+            f"reason=invalid_sql_executed"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
