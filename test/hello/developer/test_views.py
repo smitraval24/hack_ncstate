@@ -6,7 +6,11 @@ from unittest.mock import patch
 from flask import url_for
 
 from lib.test import ViewTestMixin
-from hello.developer.views import build_incident_trend, get_mock_incidents
+from hello.developer.views import (
+    build_dashboard_aggregates,
+    build_incident_trend,
+    get_mock_incidents,
+)
 
 
 # This function handles the make incident work for this file.
@@ -70,6 +74,20 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert payload["trend_data"]["detected"][-2] == 2
         assert payload["trend_data"]["resolved"][-1] == 2
         assert len(payload["trend_data"]["labels"]) == 7
+        assert payload["dashboard_aggregates"]["impacted_requests_total"] == 0
+        assert payload["dashboard_aggregates"]["severity_counts"]["high"] == 3
+
+    def test_build_dashboard_aggregates_counts_existing_incident_data(self):
+        incidents = get_mock_incidents()
+
+        aggregates = build_dashboard_aggregates(incidents)
+
+        assert aggregates["impacted_requests_total"] == 321
+        assert aggregates["severity_counts"]["critical"] == 2
+        assert aggregates["severity_counts"]["high"] == 2
+        assert aggregates["severity_counts"]["medium"] == 1
+        assert "/test-fault/external-api" in aggregates["route_impact"]["labels"]
+        assert "External API Timeout" in aggregates["type_distribution"]["labels"]
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incidents_dashboard_renders_control_room_theme(self, mock_fetch_incidents):
@@ -84,7 +102,9 @@ class TestDeveloperIncidentViews(ViewTestMixin):
 
         assert response.status_code == 200
         assert b"Incident Center" in response.data
-        assert b"autonomous recovery pipeline" in response.data
+        assert b"Detected vs Resolved" in response.data
+        assert b"Severity Distribution" in response.data
+        assert b"Incident Feed" in response.data
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incident_detail_renders_dark_report_theme(self, mock_fetch_incidents):
@@ -97,5 +117,37 @@ class TestDeveloperIncidentViews(ViewTestMixin):
 
         assert response.status_code == 200
         assert incident["id"].encode() in response.data
-        assert b"Incident Report" in response.data
-        assert b"Root Cause Analysis" in response.data
+        assert b"What broke" in response.data
+        assert b"Logs and evidence" in response.data
+        assert b"How it was fixed" in response.data
+        assert b"Learning" in response.data
+
+    @patch("hello.developer.views._fetch_incidents")
+    def test_incident_detail_shows_fallbacks_when_optional_fields_missing(self, mock_fetch_incidents):
+        incident = get_mock_incidents()[0]
+        incident["root_cause"] = {"source": None, "confidence_score": None, "explanation": None}
+        incident["verification"] = {
+            "error_rate_before": None,
+            "error_rate_after": None,
+            "latency_before": None,
+            "latency_after": None,
+            "health_check_status": None,
+            "success": None,
+        }
+        incident["status"] = "detected"
+        incident["timestamp_resolved"] = None
+        incident["remediation"] = {
+            "action_type": None,
+            "parameters": None,
+            "execution_timestamp": None,
+        }
+        mock_fetch_incidents.return_value = ([incident], "mock", None)
+
+        response = self.client.get(
+            url_for("developer.incident_detail", incident_id=incident["id"])
+        )
+
+        assert response.status_code == 200
+        assert b"Root-cause analysis is still pending for this incident." in response.data
+        assert b"Not available for this incident." in response.data
+        assert b"Resolve this incident to unlock the existing knowledge-base and cache actions." in response.data

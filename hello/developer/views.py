@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections import Counter
 from datetime import datetime, timedelta
 
 import redis
@@ -449,6 +450,99 @@ def build_incident_trend(incidents: list[dict], days: int = 7) -> dict:
     }
 
 
+def _incident_affected_requests(incident: dict) -> int:
+    """Return the best-effort affected-request count for an incident."""
+    value = (incident.get("symptoms") or {}).get("affected_requests", 0)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def build_severity_counts(incidents: list[dict]) -> dict:
+    """Aggregate incident counts by severity for read-only dashboard charts."""
+    counts = Counter((i.get("severity") or "unknown").lower() for i in incidents)
+    return {
+        "critical": counts.get("critical", 0),
+        "high": counts.get("high", 0),
+        "medium": counts.get("medium", 0),
+        "unknown": counts.get("unknown", 0),
+    }
+
+
+def build_type_distribution(incidents: list[dict], limit: int = 5) -> dict:
+    """Aggregate incident counts by type/error code for dashboard charts."""
+    buckets: Counter[str] = Counter()
+    for inc in incidents:
+        label = (
+            inc.get("incident_type")
+            or inc.get("error_code")
+            or "Unknown"
+        )
+        buckets[label] += 1
+
+    common = buckets.most_common(limit)
+    return {
+        "labels": [label for label, _ in common],
+        "values": [value for _, value in common],
+    }
+
+
+def build_route_impact(incidents: list[dict], limit: int = 5) -> dict:
+    """Aggregate affected-request totals by route for dashboard charts."""
+    buckets: Counter[str] = Counter()
+    for inc in incidents:
+        route = inc.get("route") or "-"
+        buckets[route] += _incident_affected_requests(inc)
+
+    common = buckets.most_common(limit)
+    return {
+        "labels": [label for label, _ in common],
+        "values": [value for _, value in common],
+    }
+
+
+def build_dashboard_aggregates(incidents: list[dict]) -> dict:
+    """Build read-only aggregates that power dashboard visuals."""
+    return {
+        "impacted_requests_total": sum(_incident_affected_requests(i) for i in incidents),
+        "severity_counts": build_severity_counts(incidents),
+        "type_distribution": build_type_distribution(incidents),
+        "route_impact": build_route_impact(incidents),
+    }
+
+
+def _incident_failure_summary(incident: dict) -> str:
+    """Summarize what broke using existing incident fields only."""
+    symptoms = incident.get("symptoms") or {}
+    root_cause = incident.get("root_cause") or {}
+    log_marker = symptoms.get("log_marker")
+    if log_marker and log_marker not in {"-", "—"}:
+        return str(log_marker).replace("_", " ")
+    explanation = root_cause.get("explanation")
+    if explanation:
+        return str(explanation).split(".")[0]
+    return "Awaiting detailed analysis"
+
+
+def _sort_incidents_for_dashboard(incidents: list[dict]) -> list[dict]:
+    """Show active incidents first, then newest incidents within each group."""
+    active_statuses = {"detected", "in_progress"}
+
+    def _sort_key(inc: dict) -> tuple[int, float]:
+        opened_at = inc.get("timestamp_opened")
+        opened_value = opened_at.timestamp() if opened_at else 0.0
+        return (
+            0 if inc.get("status") in active_statuses else 1,
+            -opened_value,
+        )
+
+    return sorted(
+        incidents,
+        key=_sort_key,
+    )
+
+
 # This function handles the sync status work for this file.
 def _sync_status(incidents: list[dict]) -> list[dict]:
     """Derive status from verification result so it stays in sync.
@@ -567,27 +661,10 @@ def incidents_dashboard():
 
     incidents, data_source, cloudwatch_error = _fetch_incidents()
 
+    incidents = _sort_incidents_for_dashboard(incidents)
     metrics = get_dashboard_metrics(incidents)
     trend_data = build_incident_trend(incidents)
-
-    # Drive the "Incident Types" chart from real data.
-    type_counts = {
-        "external_api": 0,
-        "db": 0,
-        "sql": 0,
-        "connection": 0,
-    }
-    for inc in incidents:
-        t = (inc.get("incident_type") or "").lower()
-        ec = (inc.get("error_code") or "").lower()
-        if "external api" in t or "external_api" in ec:
-            type_counts["external_api"] += 1
-        elif "database" in t or "db" in ec:
-            type_counts["db"] += 1
-        elif "sql" in t or "sql" in ec:
-            type_counts["sql"] += 1
-        else:
-            type_counts["connection"] += 1
+    dashboard_aggregates = build_dashboard_aggregates(incidents)
 
     return render_template(
         "developer/incidents.html",
@@ -597,7 +674,8 @@ def incidents_dashboard():
         data_source=data_source,
         cloudwatch_error=cloudwatch_error,
         cloudwatch_lookback_minutes=cloudwatch_lookback_minutes,
-        type_counts=type_counts,
+        dashboard_aggregates=dashboard_aggregates,
+        failure_summary=_incident_failure_summary,
     )
 
 
@@ -607,21 +685,10 @@ def incidents_api_data():
     """JSON API for real-time dashboard updates via polling."""
     incidents, data_source, _ = _fetch_incidents()
 
+    incidents = _sort_incidents_for_dashboard(incidents)
     metrics = get_dashboard_metrics(incidents)
     trend_data = build_incident_trend(incidents)
-
-    type_counts = {"external_api": 0, "db": 0, "sql": 0, "connection": 0}
-    for inc in incidents:
-        t = (inc.get("incident_type") or "").lower()
-        ec = (inc.get("error_code") or "").lower()
-        if "external api" in t or "external_api" in ec:
-            type_counts["external_api"] += 1
-        elif "database" in t or "db" in ec:
-            type_counts["db"] += 1
-        elif "sql" in t or "sql" in ec:
-            type_counts["sql"] += 1
-        else:
-            type_counts["connection"] += 1
+    dashboard_aggregates = build_dashboard_aggregates(incidents)
 
     # Serialize incidents for JSON
     serialized = []
@@ -635,12 +702,14 @@ def incidents_api_data():
         if s.get("remediation", {}).get("execution_timestamp"):
             s["remediation"] = dict(s["remediation"])
             s["remediation"]["execution_timestamp"] = s["remediation"]["execution_timestamp"].strftime("%Y-%m-%d %H:%M")
+        s["affected_requests_value"] = _incident_affected_requests(inc)
+        s["failure_summary"] = _incident_failure_summary(inc)
         serialized.append(s)
 
     return jsonify({
         "metrics": metrics,
         "trend_data": trend_data,
-        "type_counts": type_counts,
+        "dashboard_aggregates": dashboard_aggregates,
         "incidents": serialized,
         "data_source": data_source,
     })
