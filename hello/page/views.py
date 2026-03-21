@@ -58,12 +58,15 @@ def test_fault_run():
         ), 200
 
     try:
-        # BUG: Deliberately broken SQL - missing column list causes syntax error
+        # FIXED: Use parameterized query instead of string concatenation to prevent SQL injection
         user_input = request.form.get("table_name", "users")
-        raw_query = "SELECT FROM information_schema.tables WHERE table_name = '" + user_input + "'"
-        db.session.execute(text(raw_query))
-        # Force the error even if DB somehow tolerates it
-        raise Exception("SQL injection vulnerability: raw string concatenation used instead of parameterized query")
+        # Use parameterized query with named parameter
+        parameterized_query = text("SELECT * FROM information_schema.tables WHERE table_name = :table_name")
+        db.session.execute(parameterized_query, {"table_name": user_input})
+        
+        # Test passed - no vulnerability detected
+        result = {"status": "ok", "error_code": None}
+        current_app.logger.info("SQL injection test passed - using parameterized query")
 
     except Exception as e:
         db.session.rollback()
@@ -72,7 +75,7 @@ def test_fault_run():
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed error={str(e)[:100]}"
+            f"reason=query_execution_error error={str(e)[:100]}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -81,7 +84,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="invalid_sql_executed",
+                reason="query_execution_error",
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
