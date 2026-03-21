@@ -1,3 +1,5 @@
+"""This file handles the views logic for the developer part of the project."""
+
 import json
 import logging
 import os
@@ -22,10 +24,12 @@ from hello.incident.live_store import (
 
 logger = logging.getLogger(__name__)
 
+# This blueprint groups related routes for this part of the app.
 developer = Blueprint("developer", __name__, template_folder="templates")
 
 
 # Mock incident data - in future, this will come from database
+# This function gets the mock incidents work used in this file.
 def get_mock_incidents():
     """Generate realistic mock incident data"""
     now = datetime.now()
@@ -314,6 +318,7 @@ def get_mock_incidents():
     return incidents
 
 
+# This function gets the cloudwatch incidents work used in this file.
 def get_cloudwatch_incidents() -> tuple[list[dict], str | None]:
     """Fetch incidents derived from CloudWatch Logs.
 
@@ -354,6 +359,7 @@ def get_cloudwatch_incidents() -> tuple[list[dict], str | None]:
         return [], f"CloudWatch fetch failed: {e}"
 
 
+# This function gets the dashboard metrics work used in this file.
 def get_dashboard_metrics(incidents: list[dict] | None = None):
     """Calculate dashboard summary metrics from provided incident list."""
     if incidents is None:
@@ -414,6 +420,7 @@ def get_dashboard_metrics(incidents: list[dict] | None = None):
     }
 
 
+# This function builds the incident trend work used in this file.
 def build_incident_trend(incidents: list[dict], days: int = 7) -> dict:
     """Build detected/resolved counts for the trailing time window."""
     today = datetime.now().date()
@@ -442,6 +449,7 @@ def build_incident_trend(incidents: list[dict], days: int = 7) -> dict:
     }
 
 
+# This function handles the sync status work for this file.
 def _sync_status(incidents: list[dict]) -> list[dict]:
     """Derive status from verification result so it stays in sync.
 
@@ -461,6 +469,7 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
     return incidents
 
 
+# This function handles the merge incidents work for this file.
 def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
     """Merge live and CloudWatch incidents, deduplicating across sources.
 
@@ -508,6 +517,7 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
     return merged
 
 
+# This function handles the fetch incidents work for this file.
 def _fetch_incidents() -> tuple[list[dict], str, str | None]:
     """Fetch incidents from live store + CloudWatch (merged), or mock data.
 
@@ -544,7 +554,9 @@ def _fetch_incidents() -> tuple[list[dict], str, str | None]:
     return incidents, source, cw_error
 
 
+# This function handles the incidents dashboard work for this file.
 @developer.get("/developer/incidents")
+# This function handles the incidents dashboard work for this file.
 def incidents_dashboard():
     """Main incidents dashboard page"""
     cloudwatch_lookback_minutes: int | None = None
@@ -590,7 +602,9 @@ def incidents_dashboard():
     )
 
 
+# This function handles the incidents api data work for this file.
 @developer.get("/developer/incidents/api/data")
+# This function handles the incidents api data work for this file.
 def incidents_api_data():
     """JSON API for real-time dashboard updates via polling."""
     incidents, data_source, _ = _fetch_incidents()
@@ -634,7 +648,9 @@ def incidents_api_data():
     })
 
 
+# This function handles the incident detail work for this file.
 @developer.get("/developer/incidents/<incident_id>")
+# This function handles the incident detail work for this file.
 def incident_detail(incident_id):
     """Incident detail page"""
     incidents, _, _ = _fetch_incidents()
@@ -649,12 +665,14 @@ def incident_detail(incident_id):
     )
 
 
+# This function handles the get incident by id work for this file.
 def _get_incident_by_id(incident_id: str) -> dict | None:
     """Look up an incident from live store, CloudWatch, or mock data."""
     incidents, _, _ = _fetch_incidents()
     return next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
 
 
+# This function handles the incident to document work for this file.
 def _incident_to_document(incident: dict) -> str:
     """Serialize an incident dict into a text document for RAG indexing."""
     parts = [
@@ -683,7 +701,9 @@ def _incident_to_document(incident: dict) -> str:
     return "\n".join(parts)
 
 
+# This function handles the store in rag work for this file.
 @developer.post("/developer/incidents/<incident_id>/store-rag")
+# This function handles the store in rag work for this file.
 def store_in_rag(incident_id):
     """Store a resolved incident in the RAG knowledge base (Backboard)."""
     incident = _get_incident_by_id(incident_id)
@@ -720,7 +740,9 @@ def store_in_rag(incident_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# This function handles the store in cache work for this file.
 @developer.post("/developer/incidents/<incident_id>/store-cache")
+# This function handles the store in cache work for this file.
 def store_in_cache(incident_id):
     """Cache a resolved incident in Redis for fast lookup."""
     incident = _get_incident_by_id(incident_id)
@@ -767,7 +789,9 @@ def store_in_cache(incident_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
+# This function handles the reset incidents work for this file.
 def reset_incidents():
     """Clear all live incidents from the store."""
     try:
@@ -782,7 +806,9 @@ def reset_incidents():
 # Pipeline callback endpoints (called by Lambda + GitHub Actions)
 # ---------------------------------------------------------------------------
 
+# This function handles the pipeline pending work for this file.
 @developer.post("/developer/incidents/pipeline/pending")
+# This function handles the pipeline pending work for this file.
 def pipeline_pending():
     """Called by the Lambda after Claude pushes a fix but before deploy.
 
@@ -817,7 +843,9 @@ def pipeline_pending():
     return jsonify({"success": True, "updated": updated})
 
 
+# This function handles the pipeline callback work for this file.
 @developer.post("/developer/incidents/pipeline/callback")
+# This function handles the pipeline callback work for this file.
 def pipeline_callback():
     """Called by GitHub Actions after deploy succeeds or fails.
 

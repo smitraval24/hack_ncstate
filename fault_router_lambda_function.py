@@ -1,3 +1,5 @@
+"""This file handles the fault router lambda function logic for the hack ncstate part of the project."""
+
 import os, json, base64, gzip, urllib.request, urllib.parse, re
 from datetime import datetime, timezone
 import boto3
@@ -22,17 +24,20 @@ REASON_RE = re.compile(r"\breason=([^\s]+)")
 
 # ==============================
 
+# This function handles the decode cw payload work for this file.
 def decode_cw_payload(event: dict) -> dict:
     compressed = base64.b64decode(event["awslogs"]["data"])
     decompressed = gzip.decompress(compressed)
     return json.loads(decompressed)
 
+# This function handles the extract fault code work for this file.
 def extract_fault_code(msg: str):
     for c in FAULT_CODES:
         if c in msg:
             return c
     return None
 
+# This function builds the incident work used in this file.
 def build_incident(le, log_group, log_stream):
     msg = le.get("message", "").strip()
     ts_ms = le.get("timestamp")
@@ -46,6 +51,7 @@ def build_incident(le, log_group, log_stream):
     }
 
 
+# This function handles the incident dedupe key work for this file.
 def incident_dedupe_key(incident: dict) -> str | None:
     fault_code = incident.get("fault_code")
     if not fault_code:
@@ -59,6 +65,7 @@ def incident_dedupe_key(incident: dict) -> str | None:
 
     return "|".join((fault_code, route, reason))
 
+# This function handles the backboard message work for this file.
 def backboard_message(thread_id: str, content: str) -> dict:
     url = f"{BACKBOARD_BASE_URL}/threads/{thread_id}/messages"
     form_data = urllib.parse.urlencode({
@@ -80,6 +87,7 @@ def backboard_message(thread_id: str, content: str) -> dict:
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 
+# This function handles the invoke claude work for this file.
 def invoke_claude(incident, analysis):
     tools = [
         {
@@ -227,6 +235,7 @@ Steps you MUST follow:
         # Feed tool results back to Claude
         messages.append({"role": "user", "content": tool_results})
 
+# This function handles the lambda handler work for this file.
 def lambda_handler(event, context):
     cw = decode_cw_payload(event)
     log_group = cw.get("logGroup")
