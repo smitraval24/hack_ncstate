@@ -171,3 +171,8 @@ curl -X POST http://localhost:8000/incidents/seed-kb
 ## Team
 
 Built with caffeine and determination at **Hack NC State 2026**.
+
+## Credits
+
+This project was built on top of the basic Flask template created by Nick Janetakis.
+Credit to Nick Janetakis for the original Flask project foundation and template inspiration.
