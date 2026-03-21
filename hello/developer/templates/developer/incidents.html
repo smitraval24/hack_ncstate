@@ -2,13 +2,289 @@
 
 {% extends "layouts/index.html" %}
 
-{% block title %}Incident Dashboard - Developer Tools{% endblock %}
+{% block title %}Incident Center - Developer Tools{% endblock %}
+
+{% block body_class %}ops-page-body{% endblock %}
+
+{% block head %}
+  <style>
+    .ops-page-body {
+      background:
+        radial-gradient(circle at 10% 0%, rgba(77, 124, 255, 0.24), transparent 24%),
+        radial-gradient(circle at 85% 12%, rgba(31, 217, 187, 0.16), transparent 26%),
+        linear-gradient(180deg, #0a1020 0%, #0d1530 48%, #09111f 100%);
+      color: #eef3ff;
+    }
+
+    .ops-page-body .site-header {
+      background: rgba(7, 12, 25, 0.56);
+      border-bottom-color: rgba(149, 167, 255, 0.12);
+    }
+
+    .ops-page-body .site-brand__title,
+    .ops-page-body .site-brand,
+    .ops-page-body .site-nav__link {
+      color: #eef3ff;
+    }
+
+    .ops-page-body .site-brand__meta {
+      color: rgba(216, 227, 255, 0.72);
+    }
+
+    .ops-page-body .site-nav__link {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(149, 167, 255, 0.14);
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.18);
+    }
+
+    .ops-page-body .site-nav__link--primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, #2d7dff, #11d2bd);
+      color: white;
+    }
+
+    .ops-page-body .site-footer {
+      background: rgba(7, 12, 25, 0.46);
+      border-top-color: rgba(149, 167, 255, 0.12);
+    }
+
+    .ops-page-body .site-footer__inner {
+      color: rgba(216, 227, 255, 0.72);
+    }
+
+    .ops-page {
+      position: relative;
+      min-height: 100vh;
+      padding: 38px 0 96px;
+      overflow: hidden;
+    }
+
+    .ops-page::before,
+    .ops-page::after {
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(20px);
+      opacity: 0.34;
+      pointer-events: none;
+    }
+
+    .ops-page::before {
+      top: 80px;
+      right: 7%;
+      width: 220px;
+      height: 220px;
+      background: rgba(65, 108, 255, 0.24);
+    }
+
+    .ops-page::after {
+      left: -60px;
+      top: 540px;
+      width: 180px;
+      height: 180px;
+      background: rgba(17, 210, 189, 0.14);
+    }
+
+    .ops-shell {
+      position: relative;
+      z-index: 1;
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .ops-page .ops-panel,
+    .ops-page .bg-white {
+      background: linear-gradient(180deg, rgba(16, 24, 46, 0.96), rgba(8, 14, 27, 0.92)) !important;
+      border-color: rgba(149, 167, 255, 0.12) !important;
+      box-shadow: 0 24px 54px rgba(2, 6, 23, 0.22) !important;
+      backdrop-filter: blur(18px);
+    }
+
+    .ops-page .text-gray-900 {
+      color: #f4f7ff !important;
+    }
+
+    .ops-page .text-gray-700 {
+      color: rgba(225, 233, 255, 0.86) !important;
+    }
+
+    .ops-page .text-gray-600 {
+      color: rgba(200, 213, 248, 0.72) !important;
+    }
+
+    .ops-page .text-gray-500,
+    .ops-page .text-gray-400 {
+      color: rgba(168, 183, 222, 0.72) !important;
+    }
+
+    .ops-page .text-purple-600,
+    .ops-page .text-blue-600,
+    .ops-page .text-indigo-600 {
+      color: #9cb5ff !important;
+    }
+
+    .ops-page .text-purple-900,
+    .ops-page .text-blue-900 {
+      color: #dfe8ff !important;
+    }
+
+    .ops-page .text-red-600 {
+      color: #ff8f97 !important;
+    }
+
+    .ops-page .text-orange-600 {
+      color: #ffb86a !important;
+    }
+
+    .ops-page .text-green-600 {
+      color: #7ef5bf !important;
+    }
+
+    .ops-page .bg-gray-50,
+    .ops-page .bg-gray-100 {
+      background: rgba(255, 255, 255, 0.04) !important;
+    }
+
+    .ops-page .bg-red-100,
+    .ops-page .bg-yellow-100,
+    .ops-page .bg-green-100 {
+      background: rgba(255, 255, 255, 0.06) !important;
+    }
+
+    .ops-page .border-gray-100,
+    .ops-page .border-gray-200,
+    .ops-page .border-gray-300,
+    .ops-page .divide-gray-100 > :not([hidden]) ~ :not([hidden]) {
+      border-color: rgba(149, 167, 255, 0.12) !important;
+    }
+
+    .ops-page thead {
+      background: rgba(255, 255, 255, 0.04) !important;
+    }
+
+    .ops-page tbody {
+      background: transparent !important;
+    }
+
+    .ops-page tbody tr {
+      border-color: rgba(149, 167, 255, 0.1) !important;
+    }
+
+    .ops-page tbody tr:hover {
+      background: linear-gradient(90deg, rgba(40, 71, 145, 0.22), rgba(17, 210, 189, 0.08)) !important;
+    }
+
+    .ops-page .ops-hero {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 34px;
+      padding: 32px;
+      border-radius: 32px;
+    }
+
+    .ops-page .ops-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(109, 132, 255, 0.22);
+      background: rgba(11, 17, 34, 0.65);
+      color: #9cb5ff;
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .ops-page .ops-eyebrow::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #45dcff, #11d2bd);
+      box-shadow: 0 0 18px rgba(69, 220, 255, 0.8);
+    }
+
+    .ops-page .ops-title {
+      margin-top: 18px;
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-size: clamp(2.4rem, 4vw, 4.2rem);
+      line-height: 0.98;
+      letter-spacing: -0.05em;
+      color: white;
+    }
+
+    .ops-page .ops-subtitle {
+      margin-top: 12px;
+      max-width: 640px;
+      color: rgba(223, 232, 255, 0.76);
+      font-size: 1.02rem;
+      line-height: 1.75;
+    }
+
+    .ops-page .ops-metric-card {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .ops-page .ops-metric-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -15% -46% 55%;
+      height: 150px;
+      background: radial-gradient(circle, rgba(74, 122, 255, 0.2), transparent 68%);
+      pointer-events: none;
+    }
+
+    .ops-page .ops-summary-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(149, 167, 255, 0.14);
+      box-shadow: 0 16px 34px rgba(2, 6, 23, 0.18);
+    }
+
+    .ops-page .ops-reset-button {
+      background: rgba(255, 92, 123, 0.14) !important;
+      color: #ffc1cc !important;
+      border-color: rgba(255, 92, 123, 0.24) !important;
+    }
+
+    .ops-page .ops-reset-button:hover {
+      background: rgba(255, 92, 123, 0.24) !important;
+    }
+
+    .ops-page .ops-table-link {
+      color: #b9cbff !important;
+    }
+
+    .ops-page .ops-table-link:hover {
+      color: #eef3ff !important;
+    }
+
+    @media (max-width: 900px) {
+      .ops-shell {
+        width: min(1240px, calc(100% - 24px));
+      }
+
+      .ops-page .ops-hero {
+        padding: 24px;
+      }
+    }
+  </style>
+{% endblock %}
 
 {% block body %}
-  <div class="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50 to-purple-50">
-    <div class="max-w-7xl mx-auto pt-8 pb-12 px-4">
+  <div class="ops-page">
+    <div class="ops-shell">
       <!-- Header -->
-      <div class="mb-8">
+      <div class="ops-hero ops-panel" data-reveal>
         <div class="flex items-center gap-2 mb-3">
           <div class="bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg p-1.5 shadow-lg">
             <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -16,18 +292,21 @@
             </svg>
           </div>
           <div>
-            <h1 class="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-              Incident Dashboard
+            <div class="ops-eyebrow">Control Room</div>
+            <h1 class="ops-title">
+              Incident Center
             </h1>
-            <p class="text-gray-600 mt-1">
-              Production monitoring and incident tracking for self-healing operations
+            <p class="ops-subtitle">
+              Production monitoring, remediation progress, and self-healing system state in one
+              cinematic view. This is the operational surface for watching faults move through the
+              autonomous recovery pipeline.
             </p>
             <div class="mt-3 flex items-center gap-2">
               {% if data_source in ('live', 'live+cloudwatch') %}
                 <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-sm animate-pulse">
                   Source: {{ 'Live + CloudWatch' if data_source == 'live+cloudwatch' else 'Live Injected' }}
                 </span>
-                <button onclick="resetIncidents()" class="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200 hover:bg-red-200 transition-colors cursor-pointer">
+                <button onclick="resetIncidents()" class="ops-reset-button inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700 border border-red-200 hover:bg-red-200 transition-colors cursor-pointer">
                   Reset All
                 </button>
               {% elif data_source == 'cloudwatch' %}
@@ -54,7 +333,7 @@
               <div class="mt-3 text-xs text-gray-600">
                 No FaultRouter incidents found in the last
                 <span class="font-semibold">{{ cloudwatch_lookback_minutes if cloudwatch_lookback_minutes is not none else 'configured' }}</span>
-                minutes. This usually means the Lambda didn’t run in that window (or it’s in a different region).
+                minutes. This usually means the Lambda didn't run in that window (or it's in a different region).
               </div>
             {% endif %}
           </div>
@@ -64,7 +343,7 @@
       <!-- Metrics Cards -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <!-- Active Incidents -->
-        <div class="group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-red-100 hover:border-red-300 overflow-hidden hover:-translate-y-1">
+        <div class="ops-metric-card group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-red-100 hover:border-red-300 overflow-hidden hover:-translate-y-1" data-reveal style="--reveal-delay: 50ms;">
           <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-red-100 to-transparent rounded-full -mr-16 -mt-16 opacity-50"></div>
           <div class="relative">
             <div class="flex items-center justify-between mb-4">
@@ -80,7 +359,7 @@
         </div>
 
         <!-- Total Resolved -->
-        <div class="group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-green-100 hover:border-green-300 overflow-hidden hover:-translate-y-1">
+        <div class="ops-metric-card group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-green-100 hover:border-green-300 overflow-hidden hover:-translate-y-1" data-reveal style="--reveal-delay: 100ms;">
           <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-green-100 to-transparent rounded-full -mr-16 -mt-16 opacity-50"></div>
           <div class="relative">
             <div class="flex items-center justify-between mb-4">
@@ -97,7 +376,7 @@
         </div>
 
         <!-- Auto-Resolution Rate -->
-        <div class="group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-blue-100 hover:border-blue-300 overflow-hidden hover:-translate-y-1">
+        <div class="ops-metric-card group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-blue-100 hover:border-blue-300 overflow-hidden hover:-translate-y-1" data-reveal style="--reveal-delay: 150ms;">
           <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-blue-100 to-transparent rounded-full -mr-16 -mt-16 opacity-50"></div>
           <div class="relative">
             <div class="flex items-center justify-between mb-4">
@@ -113,7 +392,7 @@
         </div>
 
         <!-- MTTR -->
-        <div class="group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-purple-100 hover:border-purple-300 overflow-hidden hover:-translate-y-1">
+        <div class="ops-metric-card group relative bg-white rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 p-6 border border-purple-100 hover:border-purple-300 overflow-hidden hover:-translate-y-1" data-reveal style="--reveal-delay: 200ms;">
           <div class="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-purple-100 to-transparent rounded-full -mr-16 -mt-16 opacity-50"></div>
           <div class="relative">
             <div class="flex items-center justify-between mb-4">
@@ -130,7 +409,7 @@
       </div>
 
       <!-- Charts Row -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8" data-reveal>
         <!-- Incidents Over Time -->
         <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 hover:shadow-xl transition-shadow duration-300">
           <div class="flex items-center gap-2 mb-5">
@@ -164,7 +443,7 @@
       </div>
 
       <!-- Incidents Table -->
-      <div class="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+      <div class="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden" data-reveal>
         <div class="px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
           <div class="flex items-center gap-2">
             <div class="bg-gradient-to-br from-gray-700 to-gray-900 rounded-lg p-1.5">
@@ -208,7 +487,7 @@
               {% for incident in incidents %}
               <tr class="hover:bg-gradient-to-r hover:from-blue-50 hover:to-purple-50 transition-all duration-200 group">
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-mono font-bold">
-                  <a href="/developer/incidents/{{ incident.id }}" class="text-purple-600 hover:text-purple-900 hover:underline">
+                  <a href="/developer/incidents/{{ incident.id }}" class="ops-table-link text-purple-600 hover:text-purple-900 hover:underline">
                     {{ incident.id }}
                   </a>
                 </td>
@@ -267,7 +546,7 @@
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                   <a href="/developer/incidents/{{ incident.id }}"
-                     class="inline-flex items-center gap-1 font-semibold text-purple-600 hover:text-purple-900 transition-colors duration-200 group-hover:translate-x-1">
+                     class="ops-table-link inline-flex items-center gap-1 font-semibold text-purple-600 hover:text-purple-900 transition-colors duration-200 group-hover:translate-x-1">
                     View Details
                     <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
@@ -283,11 +562,11 @@
 
       <!-- Summary Footer -->
       <div class="mt-8 text-center">
-        <div class="inline-flex items-center gap-2 px-6 py-3 bg-white rounded-full shadow-md border border-gray-200">
+        <div class="ops-summary-pill">
           <svg class="w-3 h-3 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
           </svg>
-          <span class="text-sm font-semibold text-gray-700">
+          <span id="summary-count" class="text-sm font-semibold text-gray-700">
             Showing <span class="text-purple-600">{{ incidents|length }}</span> of <span class="text-purple-600">{{ metrics.total_incidents }}</span> total incidents
           </span>
         </div>
@@ -327,12 +606,21 @@
         maintainAspectRatio: false,
         plugins: {
           legend: {
-            position: 'bottom'
+            position: 'bottom',
+            labels: {
+              color: 'rgba(225, 233, 255, 0.86)'
+            }
           }
         },
         scales: {
           y: {
-            beginAtZero: true
+            beginAtZero: true,
+            ticks: { color: 'rgba(200, 213, 248, 0.72)' },
+            grid: { color: 'rgba(149, 167, 255, 0.12)' }
+          },
+          x: {
+            ticks: { color: 'rgba(200, 213, 248, 0.72)' },
+            grid: { color: 'rgba(149, 167, 255, 0.08)' }
           }
         }
       }
@@ -364,7 +652,10 @@
         maintainAspectRatio: false,
         plugins: {
           legend: {
-            position: 'bottom'
+            position: 'bottom',
+            labels: {
+              color: 'rgba(225, 233, 255, 0.86)'
+            }
           }
         }
       }
@@ -442,7 +733,7 @@
           }
 
           // Update total count
-          const totalEl = document.querySelector('.text-sm.font-semibold.text-gray-700');
+          const totalEl = document.getElementById('summary-count');
           if (totalEl) {
             totalEl.innerHTML = 'Showing <span class="text-purple-600">' + data.incidents.length + '</span> of <span class="text-purple-600">' + data.metrics.total_incidents + '</span> total incidents';
           }

@@ -3,8 +3,10 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+from flask import url_for
+
 from lib.test import ViewTestMixin
-from hello.developer.views import build_incident_trend
+from hello.developer.views import build_incident_trend, get_mock_incidents
 
 
 # This function handles the make incident work for this file.
@@ -68,3 +70,32 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert payload["trend_data"]["detected"][-2] == 2
         assert payload["trend_data"]["resolved"][-1] == 2
         assert len(payload["trend_data"]["labels"]) == 7
+
+    @patch("hello.developer.views._fetch_incidents")
+    def test_incidents_dashboard_renders_control_room_theme(self, mock_fetch_incidents):
+        now = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+        incidents = [
+            _make_incident("INC-1", now, now, "resolved"),
+            _make_incident("INC-2", now - timedelta(hours=1), None, "detected"),
+        ]
+        mock_fetch_incidents.return_value = (incidents, "live", None)
+
+        response = self.client.get(url_for("developer.incidents_dashboard"))
+
+        assert response.status_code == 200
+        assert b"Incident Center" in response.data
+        assert b"autonomous recovery pipeline" in response.data
+
+    @patch("hello.developer.views._fetch_incidents")
+    def test_incident_detail_renders_dark_report_theme(self, mock_fetch_incidents):
+        incident = get_mock_incidents()[0]
+        mock_fetch_incidents.return_value = ([incident], "mock", None)
+
+        response = self.client.get(
+            url_for("developer.incident_detail", incident_id=incident["id"])
+        )
+
+        assert response.status_code == 200
+        assert incident["id"].encode() in response.data
+        assert b"Incident Report" in response.data
+        assert b"Root Cause Analysis" in response.data

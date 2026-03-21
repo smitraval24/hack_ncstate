@@ -465,6 +465,8 @@
 
     .workflow-step {
       position: relative;
+      display: flex;
+      flex-direction: column;
       min-height: 280px;
       padding: 28px 20px 22px;
       border-radius: 28px;
@@ -526,17 +528,16 @@
       color: rgba(220, 229, 255, 0.72);
       line-height: 1.7;
       font-size: 0.98rem;
+      padding-bottom: 14px;
     }
 
     .workflow-step__footer {
-      position: absolute;
-      left: 20px;
-      right: 20px;
-      bottom: 18px;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
+      margin-top: auto;
+      padding-top: 10px;
       color: rgba(199, 211, 249, 0.72);
       font-size: 0.78rem;
       text-transform: uppercase;
@@ -700,7 +701,7 @@
 
       .workflow-step {
         min-height: auto;
-        padding-bottom: 76px;
+        padding-bottom: 22px;
       }
 
       .workflow-step::before {
