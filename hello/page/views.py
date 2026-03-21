@@ -58,16 +58,31 @@ def test_fault_run():
         ), 200
 
     try:
-        # FIXED: Use parameterized query instead of string concatenation to prevent SQL injection
+        # SECURITY FIX: Use parameterized query to prevent SQL injection
+        # This prevents user input from being directly concatenated into SQL strings
         user_input = request.form.get("table_name", "users")
-        # Use parameterized query with named parameter
-        parameterized_query = text("SELECT * FROM information_schema.tables WHERE table_name = :table_name")
-        db.session.execute(parameterized_query, {"table_name": user_input})
         
-        # Test passed - no vulnerability detected
-        result = {"status": "ok", "error_code": None}
-        current_app.logger.info("SQL injection test passed - using parameterized query")
+        # Validate input to ensure it contains only alphanumeric characters and underscores
+        if not user_input.replace('_', '').isalnum():
+            raise ValueError("Invalid table name - only alphanumeric characters and underscores allowed")
+        
+        # Use parameterized query with named parameter - this is the correct approach
+        parameterized_query = text("SELECT table_name FROM information_schema.tables WHERE table_name = :table_name LIMIT 1")
+        result_set = db.session.execute(parameterized_query, {"table_name": user_input})
+        
+        # Fetch result to ensure query executes successfully
+        table_found = result_set.fetchone()
+        
+        # Test passed - no vulnerability detected, using secure parameterized query
+        result = {"status": "ok", "error_code": None, "message": "SQL injection test passed - using secure parameterized query"}
+        current_app.logger.info("SQL injection test passed - using parameterized query with input validation")
 
+    except ValueError as ve:
+        # Input validation failed
+        db.session.rollback()
+        result = {"status": "error", "error_code": "INVALID_INPUT", "message": str(ve)}
+        current_app.logger.warning(f"SQL injection test - input validation failed: {str(ve)}")
+        
     except Exception as e:
         db.session.rollback()
 
@@ -96,7 +111,7 @@ def test_fault_run():
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
-    ), (500 if result["status"] == "error" else 200)
+    ), (500 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
 @page.post("/test-fault/external-api")
