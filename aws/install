@@ -16,6 +16,7 @@ usage() {
   cat 1>&2 <<EOF
 Installs the AWS CLI v2
 
+# This part keeps the USAGE settings together.
 USAGE:
     install [FLAGS] [OPTIONS]
 

@@ -1,8 +1,11 @@
+"""This file handles the models logic for the incident part of the project."""
+
 import datetime
 
 from hello.extensions import db
 
 
+# This class keeps the incident data and behavior in one place.
 class Incident(db.Model):
     """Stores incident records for the self-healing pipeline."""
 

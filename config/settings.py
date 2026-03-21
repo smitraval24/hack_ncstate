@@ -1,3 +1,5 @@
+"""This file handles the settings logic for the config part of the project."""
+
 import os
 
 from distutils.util import strtobool

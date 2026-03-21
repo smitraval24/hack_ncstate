@@ -1,3 +1,5 @@
+"""This file keeps tests for the test part of the project so new changes stay safe."""
+
 import importlib
 import json
 import os
@@ -8,6 +10,7 @@ fault_router_lambda = importlib.import_module("fault_router_lambda_function")
 github_tool_lambda = importlib.import_module("GithubTool_lambda_function")
 
 
+# This function runs the incident dedupe key ignores latency for same fault route and reason work used in this file.
 def test_incident_dedupe_key_ignores_latency_for_same_fault_route_and_reason():
     first = fault_router_lambda.build_incident(
         {
@@ -42,6 +45,7 @@ def test_incident_dedupe_key_ignores_latency_for_same_fault_route_and_reason():
     )
 
 
+# This function runs the incident dedupe key keeps distinct reasons separate work used in this file.
 def test_incident_dedupe_key_keeps_distinct_reasons_separate():
     timeout_incident = fault_router_lambda.build_incident(
         {
@@ -73,6 +77,7 @@ def test_incident_dedupe_key_keeps_distinct_reasons_separate():
     )
 
 
+# This function runs the push github fix skips commit when content is unchanged work used in this file.
 def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
     os.environ["GITHUB_OWNER"] = "example"
     os.environ["GITHUB_REPO"] = "repo"

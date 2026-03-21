@@ -9,6 +9,7 @@ from lib.test import ViewTestMixin
 from hello.incident.models import Incident
 
 
+# This class keeps the test incident views data and behavior in one place.
 class TestIncidentViews(ViewTestMixin):
     """Tests for the /incidents/ blueprint."""
 

@@ -1,3 +1,5 @@
+"""This file handles the cloudwatch logs logic for the aws part of the project."""
+
 from __future__ import annotations
 
 import hashlib
@@ -14,6 +16,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 
+# This class keeps the cloud watch log event data and behavior in one place.
 @dataclass(frozen=True)
 class CloudWatchLogEvent:
     log_group: str
@@ -29,6 +32,7 @@ class CloudWatchLogEvent:
 _CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
 
+# This function handles the cache get work for this file.
 def _cache_get(key: tuple[Any, ...]) -> Any | None:
     now = time.time()
     entry = _CACHE.get(key)
@@ -40,6 +44,7 @@ def _cache_get(key: tuple[Any, ...]) -> Any | None:
     return entry["value"]
 
 
+# This function handles the cache set work for this file.
 def _cache_set(key: tuple[Any, ...], value: Any, ttl_seconds: int) -> None:
     _CACHE[key] = {
         "expires_at": time.time() + ttl_seconds,
@@ -47,6 +52,7 @@ def _cache_set(key: tuple[Any, ...], value: Any, ttl_seconds: int) -> None:
     }
 
 
+# This function gets the cloudwatch region work used in this file.
 def get_cloudwatch_region(default: str = "us-east-1") -> str:
     return (
         os.getenv("AWS_REGION")
@@ -55,6 +61,7 @@ def get_cloudwatch_region(default: str = "us-east-1") -> str:
     )
 
 
+# This function gets the cloudwatch log groups work used in this file.
 def get_cloudwatch_log_groups() -> list[str]:
     """Return configured log groups.
 
@@ -73,6 +80,7 @@ def get_cloudwatch_log_groups() -> list[str]:
     return []
 
 
+# This function fetches the recent events work used in this file.
 def fetch_recent_events(
     *,
     log_groups: list[str],
@@ -265,6 +273,7 @@ _END_REQ_RE = re.compile(r"^END RequestId:\s*([a-f0-9-]+)")
 _ERROR_PROCESSING_RE = re.compile(r"^ERROR processing\s+(FAULT_[A-Z0-9_]+):")
 
 
+# This function gets the fault codes work used in this file.
 def get_fault_codes() -> set[str]:
     """Fault codes the dashboard should consider as incidents.
 
@@ -278,6 +287,7 @@ def get_fault_codes() -> set[str]:
     return {c.strip() for c in raw.split(",") if c.strip()}
 
 
+# This function handles the extract fault code any work for this file.
 def _extract_fault_code_any(message: str, allowed: set[str]) -> str | None:
     for code in allowed:
         if code in message:
@@ -285,6 +295,7 @@ def _extract_fault_code_any(message: str, allowed: set[str]) -> str | None:
     return None
 
 
+# This function handles the parse backboard analysis message work for this file.
 def _parse_backboard_analysis_message(msg: str) -> dict[str, Any] | None:
     if not msg.startswith("BACKBOARD_ANALYSIS:"):
         return None
@@ -295,12 +306,14 @@ def _parse_backboard_analysis_message(msg: str) -> dict[str, Any] | None:
         return None
 
 
+# This function handles the extract http error code work for this file.
 def _extract_http_error_code(msg: str) -> str | None:
     # Example: <HTTPError 405: 'METHOD NOT ALLOWED'>
     m = re.search(r"<HTTPError\s+(\d+):", msg)
     return m.group(1) if m else None
 
 
+# This function builds the fault router incidents work used in this file.
 def build_fault_router_incidents(
     events: list[CloudWatchLogEvent],
     *,
@@ -498,11 +511,13 @@ def build_fault_router_incidents(
     return out[:max_incidents]
 
 
+# This function handles the stable id work for this file.
 def _stable_id(*parts: str) -> str:
     h = hashlib.sha1("|".join(parts).encode("utf-8"), usedforsecurity=False)
     return h.hexdigest()[:10]
 
 
+# This function handles the guess severity work for this file.
 def _guess_severity(error_code: str, message: str) -> str:
     msg = message.lower()
     if "critical" in msg or "panic" in msg:
@@ -516,6 +531,7 @@ def _guess_severity(error_code: str, message: str) -> str:
     return "medium"
 
 
+# This function handles the guess type work for this file.
 def _guess_type(error_code: str) -> str:
     ec = error_code.upper()
     if "EXTERNAL_API" in ec:
@@ -529,6 +545,7 @@ def _guess_type(error_code: str) -> str:
     return "Application Error"
 
 
+# This function handles the extract error code work for this file.
 def _extract_error_code(message: str) -> str:
     only_fault_codes = os.getenv("CLOUDWATCH_ONLY_FAULT_CODES", "true").lower() in (
         "1",
@@ -572,6 +589,7 @@ def _extract_error_code(message: str) -> str:
     return "ERROR"
 
 
+# This function handles the extract route work for this file.
 def _extract_route(message: str) -> str | None:
     m = _ROUTE_RE.search(message)
     if m:
@@ -586,11 +604,13 @@ def _extract_route(message: str) -> str | None:
     return None
 
 
+# This function handles the extract latency s work for this file.
 def _extract_latency_s(message: str) -> float | None:
     m = _LATENCY_RE.search(message)
     return float(m.group(1)) if m else None
 
 
+# This function builds the incidents from events work used in this file.
 def build_incidents_from_events(
     events: list[CloudWatchLogEvent],
     *,

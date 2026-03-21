@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Fault → Incident creation
 # ---------------------------------------------------------------------------
 
+# This function records the incident work used in this file.
 def record_incident(
     error_code: str,
     symptoms: str,
@@ -69,6 +70,7 @@ def record_incident(
 # RAG-powered analysis
 # ---------------------------------------------------------------------------
 
+# This function analyzes the incident work used in this file.
 def analyze_incident(incident: Incident) -> Incident:
     """Run the full RAG analysis pipeline on an incident.
 
@@ -84,6 +86,7 @@ def analyze_incident(incident: Incident) -> Incident:
 # Post-remediation: index the resolved incident for future retrieval
 # ---------------------------------------------------------------------------
 
+# This function resolves the incident work used in this file.
 def resolve_incident(
     incident: Incident,
     root_cause: str,
@@ -126,6 +129,7 @@ def resolve_incident(
 # Convenience: record + analyse in one call
 # ---------------------------------------------------------------------------
 
+# This function handles the detect and analyze work for this file.
 def detect_and_analyze(
     error_code: str,
     symptoms: str,

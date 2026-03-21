@@ -53,12 +53,14 @@ _sse_lock = threading.Lock()
 _subscriber_started = False
 
 
+# This function handles the get redis work for this file.
 def _get_redis() -> redis.Redis:
     """Create a Redis client from the app config."""
     url = current_app.config.get("REDIS_URL", "redis://redis:6379/0")
     return redis.from_url(url)
 
 
+# This function handles the publish event work for this file.
 def _publish_event(data: dict) -> None:
     """Publish an SSE event dict to Redis so all workers receive it."""
     try:
@@ -68,6 +70,7 @@ def _publish_event(data: dict) -> None:
         pass  # best-effort; don't break the API response
 
 
+# This function handles the start subscriber thread work for this file.
 def _start_subscriber_thread() -> None:
     """Start a daemon thread that listens on Redis and fans-out to local queues."""
     global _subscriber_started
@@ -101,6 +104,7 @@ def _start_subscriber_thread() -> None:
     t.start()
 
 
+# This blueprint groups related routes for this part of the app.
 incident_bp = Blueprint(
     "incident",
     __name__,
@@ -113,6 +117,7 @@ incident_bp = Blueprint(
 # JSON API
 # ---------------------------------------------------------------------------
 
+# This function lists the incidents work used in this file.
 @incident_bp.get("/")
 def list_incidents():
     """Return all incidents ordered by most recent first."""
@@ -122,6 +127,7 @@ def list_incidents():
     return jsonify([i.to_dict() for i in incidents])
 
 
+# This function gets the incident work used in this file.
 @incident_bp.get("/<int:incident_id>")
 def get_incident(incident_id: int):
     """Return a single incident by ID."""
@@ -131,6 +137,7 @@ def get_incident(incident_id: int):
     return jsonify(incident.to_dict())
 
 
+# This function creates the incident work used in this file.
 @incident_bp.post("/")
 def create_incident():
     """Record a new incident (called by the AWS log-monitoring service).
@@ -169,6 +176,7 @@ def create_incident():
     return jsonify(incident.to_dict()), 201
 
 
+# This function handles the reanalyze incident work for this file.
 @incident_bp.post("/<int:incident_id>/analyze")
 def reanalyze_incident(incident_id: int):
     """Run RAG analysis on an existing incident."""
@@ -186,6 +194,7 @@ def reanalyze_incident(incident_id: int):
     return jsonify(incident.to_dict())
 
 
+# This function handles the resolve work for this file.
 @incident_bp.post("/<int:incident_id>/resolve")
 def resolve(incident_id: int):
     """Mark an incident as resolved and index it in Backboard.
@@ -219,6 +228,7 @@ def resolve(incident_id: int):
     return jsonify(incident.to_dict())
 
 
+# This function handles the bootstrap assistant work for this file.
 @incident_bp.post("/setup-assistant")
 def bootstrap_assistant():
     """One-time: create the Backboard RAG assistant and thread.
@@ -238,6 +248,7 @@ def bootstrap_assistant():
     }), 201
 
 
+# This function seeds the kb work used in this file.
 @incident_bp.post("/seed-kb")
 def seed_kb():
     """Seed the Backboard RAG knowledge base with example incidents.
@@ -264,6 +275,7 @@ def seed_kb():
 # SSE stream
 # ---------------------------------------------------------------------------
 
+# This function handles the sse stream work for this file.
 @incident_bp.get("/stream")
 def sse_stream():
     """Server-Sent Events stream for live dashboard updates.
@@ -307,6 +319,7 @@ def sse_stream():
 # HTML dashboard
 # ---------------------------------------------------------------------------
 
+# This function handles the dashboard work for this file.
 @incident_bp.get("/dashboard")
 def dashboard():
     """Render the real-time incident dashboard."""

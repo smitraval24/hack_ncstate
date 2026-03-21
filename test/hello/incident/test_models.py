@@ -5,6 +5,7 @@ import json
 from hello.incident.models import Incident
 
 
+# This class keeps the test incident model data and behavior in one place.
 class TestIncidentModel:
     def test_to_dict_returns_all_fields(self, app, session):
         inc = Incident(

@@ -1,3 +1,5 @@
+"""This file handles the views logic for the page part of the project."""
+
 import os
 import sys
 import time
@@ -13,16 +15,19 @@ from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
 from hello.incident.live_store import create_incident as create_live_incident
 
+# This blueprint groups related routes for this part of the app.
 page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 
 
+# This function handles the log fault event work for this file.
 def _log_fault_event(message: str) -> None:
     """Emit a single structured fault log line for CloudWatch subscribers."""
     current_app.logger.error(message)
 
 
+# This function handles the home work for this file.
 @page.get("/")
 def home():
     return render_template(
@@ -34,6 +39,7 @@ def home():
     )
 
 
+# This function runs the fault work used in this file.
 @page.get("/test-fault")
 def test_fault():
     return render_template(
@@ -45,6 +51,7 @@ def test_fault():
     )
 
 
+# This function runs the fault run work used in this file.
 @page.post("/test-fault/run")
 def test_fault_run():
     error_code = "FAULT_SQL_INJECTION_TEST"
@@ -152,6 +159,7 @@ def test_fault_run():
     ), (500 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
+# This function makes the external api call with retry work used in this file.
 def make_external_api_call_with_retry(url, max_retries=3, base_timeout=10.0, backoff_factor=1.5):
     """
     Make external API call with exponential backoff retry and circuit breaker logic.
@@ -243,6 +251,7 @@ def make_external_api_call_with_retry(url, max_retries=3, base_timeout=10.0, bac
     return None, total_latency, last_exception
 
 
+# This function runs the fault external api work used in this file.
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
     error_code = "FAULT_EXTERNAL_API_LATENCY"
@@ -442,6 +451,7 @@ def test_fault_external_api():
     ), (504 if result["status"] == "error" and result.get("error_code") == error_code else 200)
 
 
+# This function runs the fault db timeout work used in this file.
 @page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
     error_code = "FAULT_DB_TIMEOUT"

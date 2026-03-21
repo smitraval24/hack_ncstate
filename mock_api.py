@@ -1,9 +1,12 @@
+"""This file handles the mock api logic for the hack ncstate part of the project."""
+
 from flask import Flask, jsonify
 import random, time, os
 
 app = Flask(__name__)
 
 
+# This function handles the data work for this file.
 @app.route("/data")
 def data():
     fault = os.getenv("API_FAULT_MODE", "")
@@ -17,6 +20,7 @@ def data():
     return jsonify({"value": 42})
 
 
+# This function handles the health work for this file.
 @app.route("/health")
 def health():
     return "OK", 200

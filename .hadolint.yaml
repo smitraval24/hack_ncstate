@@ -3,5 +3,6 @@
 ---
 failure-threshold: "style"
 # This part keeps the ignored settings together.
+# This part keeps the ignored settings together.
 ignored:
   - "DL3008"

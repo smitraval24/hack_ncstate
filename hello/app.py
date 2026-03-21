@@ -1,3 +1,5 @@
+"""This file handles the app logic for the hello part of the project."""
+
 import logging
 import os
 import sys
@@ -15,6 +17,7 @@ from hello.up.views import up
 from hello.developer.views import developer
 
 
+# This function creates the celery app work used in this file.
 def create_celery_app(app=None):
     """
     Create a new Celery app and tie together the Celery config to the app's
@@ -38,6 +41,7 @@ def create_celery_app(app=None):
     return celery
 
 
+# This function creates the app work used in this file.
 def create_app(settings_override=None):
     """
     Create a Flask application using the app factory pattern.
@@ -70,6 +74,7 @@ def create_app(settings_override=None):
     return app
 
 
+# This function handles the configure logging work for this file.
 def configure_logging(app: Flask) -> None:
     """Configure application logging to stdout/stderr.
 
@@ -117,6 +122,7 @@ def configure_logging(app: Flask) -> None:
     app.logger.info("Console logging enabled level=%s", level_name)
 
 
+# This function handles the register cli work for this file.
 def register_cli(app):
     """Register custom Flask CLI commands."""
 
@@ -135,6 +141,7 @@ def register_cli(app):
             click.echo(f"  {r['filename']}  →  {status}")
 
 
+# This function handles the extensions work for this file.
 def extensions(app):
     """
     Register 0 or more extensions (mutates the app passed in).
@@ -149,6 +156,7 @@ def extensions(app):
     return None
 
 
+# This function handles the configure cloudwatch logging work for this file.
 def configure_cloudwatch_logging(app):
     """Deprecated: direct CloudWatch shipping is disabled.
 
@@ -160,6 +168,7 @@ def configure_cloudwatch_logging(app):
     )
 
 
+# This function handles the middleware work for this file.
 def middleware(app):
     """
     Register 0 or more middleware (mutates the app passed in).

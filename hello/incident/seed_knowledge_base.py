@@ -398,6 +398,7 @@ KB_ENTRIES: list[dict] = [
 # Seeder logic
 # ---------------------------------------------------------------------------
 
+# This function seeds the knowledge base work used in this file.
 def seed_knowledge_base() -> list[dict]:
     """Upload all KB entries to the Backboard assistant's document store.
 

@@ -1,3 +1,5 @@
+"""This file handles the gunicorn logic for the config part of the project."""
+
 # -*- coding: utf-8 -*-
 
 import multiprocessing

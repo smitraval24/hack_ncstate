@@ -1,3 +1,5 @@
+<!-- This template shows the test fault page for the page part of the app. -->
+
 {% extends "layouts/index.html" %}
 
 {% block title %}Fault Injection - Docker + Flask{% endblock %}
@@ -51,6 +53,7 @@
           Executes invalid SQL (<code class="bg-gray-100 px-1 rounded">SELECT FROM</code>)
           to trigger a database syntax error.
         </p>
+<!-- This form lets the user send data for this page. -->
         <form method="POST" action="/test-fault/run">
           <button type="submit"
             class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition">

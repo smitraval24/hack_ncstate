@@ -1,8 +1,11 @@
+"""This file keeps tests for the page part of the project so new changes stay safe."""
+
 from flask import url_for
 
 from lib.test import ViewTestMixin
 
 
+# This class keeps the test page data and behavior in one place.
 class TestPage(ViewTestMixin):
     def test_home_page(self):
         """Home page should respond with a success 200."""

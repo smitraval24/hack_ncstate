@@ -1,8 +1,11 @@
+"""This file keeps tests for the up part of the project so new changes stay safe."""
+
 from flask import url_for
 
 from lib.test import ViewTestMixin
 
 
+# This class keeps the test up data and behavior in one place.
 class TestUp(ViewTestMixin):
     def test_up(self):
         """Up should respond with a success 200."""

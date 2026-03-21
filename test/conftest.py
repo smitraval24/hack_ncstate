@@ -1,3 +1,5 @@
+"""This file keeps tests for the test part of the project so new changes stay safe."""
+
 import pytest
 
 from config import settings
@@ -5,6 +7,7 @@ from hello.app import create_app
 from hello.extensions import db as _db
 
 
+# This function handles the app work for this file.
 @pytest.fixture(scope="session")
 def app():
     """
@@ -37,6 +40,7 @@ def app():
     ctx.pop()
 
 
+# This function handles the client work for this file.
 @pytest.fixture(scope="function")
 def client(app):
     """
@@ -48,6 +52,7 @@ def client(app):
     yield app.test_client()
 
 
+# This function handles the db work for this file.
 @pytest.fixture(scope="session")
 def db(app):
     """
@@ -62,6 +67,7 @@ def db(app):
     return _db
 
 
+# This function handles the session work for this file.
 @pytest.fixture(scope="function")
 def session(db):
     """

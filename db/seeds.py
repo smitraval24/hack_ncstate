@@ -1,3 +1,5 @@
+"""This file handles the seeds logic for the db part of the project."""
+
 # This file should contain records you want created when you run flask db seed.
 #
 # Example:

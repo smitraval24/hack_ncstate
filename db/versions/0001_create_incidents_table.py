@@ -15,6 +15,7 @@ branch_labels = None
 depends_on = None
 
 
+# This function handles the upgrade work for this file.
 def upgrade():
     op.create_table(
         "incidents",
@@ -52,5 +53,6 @@ def upgrade():
     )
 
 
+# This function handles the downgrade work for this file.
 def downgrade():
     op.drop_table("incidents")

@@ -7,6 +7,7 @@ from lib.test import ViewTestMixin
 from hello.incident.models import Incident
 
 
+# This class keeps the test analyzer data and behavior in one place.
 class TestAnalyzer(ViewTestMixin):
     """Tests for analyzer.record_incident and detect_and_analyze."""
 

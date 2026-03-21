@@ -556,7 +556,6 @@ def _fetch_incidents() -> tuple[list[dict], str, str | None]:
 
 # This function handles the incidents dashboard work for this file.
 @developer.get("/developer/incidents")
-# This function handles the incidents dashboard work for this file.
 def incidents_dashboard():
     """Main incidents dashboard page"""
     cloudwatch_lookback_minutes: int | None = None
@@ -604,7 +603,6 @@ def incidents_dashboard():
 
 # This function handles the incidents api data work for this file.
 @developer.get("/developer/incidents/api/data")
-# This function handles the incidents api data work for this file.
 def incidents_api_data():
     """JSON API for real-time dashboard updates via polling."""
     incidents, data_source, _ = _fetch_incidents()
@@ -650,7 +648,6 @@ def incidents_api_data():
 
 # This function handles the incident detail work for this file.
 @developer.get("/developer/incidents/<incident_id>")
-# This function handles the incident detail work for this file.
 def incident_detail(incident_id):
     """Incident detail page"""
     incidents, _, _ = _fetch_incidents()
@@ -703,7 +700,6 @@ def _incident_to_document(incident: dict) -> str:
 
 # This function handles the store in rag work for this file.
 @developer.post("/developer/incidents/<incident_id>/store-rag")
-# This function handles the store in rag work for this file.
 def store_in_rag(incident_id):
     """Store a resolved incident in the RAG knowledge base (Backboard)."""
     incident = _get_incident_by_id(incident_id)
@@ -742,7 +738,6 @@ def store_in_rag(incident_id):
 
 # This function handles the store in cache work for this file.
 @developer.post("/developer/incidents/<incident_id>/store-cache")
-# This function handles the store in cache work for this file.
 def store_in_cache(incident_id):
     """Cache a resolved incident in Redis for fast lookup."""
     incident = _get_incident_by_id(incident_id)
@@ -791,7 +786,6 @@ def store_in_cache(incident_id):
 
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
-# This function handles the reset incidents work for this file.
 def reset_incidents():
     """Clear all live incidents from the store."""
     try:
@@ -808,7 +802,6 @@ def reset_incidents():
 
 # This function handles the pipeline pending work for this file.
 @developer.post("/developer/incidents/pipeline/pending")
-# This function handles the pipeline pending work for this file.
 def pipeline_pending():
     """Called by the Lambda after Claude pushes a fix but before deploy.
 
@@ -845,7 +838,6 @@ def pipeline_pending():
 
 # This function handles the pipeline callback work for this file.
 @developer.post("/developer/incidents/pipeline/callback")
-# This function handles the pipeline callback work for this file.
 def pipeline_callback():
     """Called by GitHub Actions after deploy succeeds or fails.
 

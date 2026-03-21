@@ -1,3 +1,5 @@
+"""This file keeps tests for the developer part of the project so new changes stay safe."""
+
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
@@ -5,6 +7,7 @@ from lib.test import ViewTestMixin
 from hello.developer.views import build_incident_trend
 
 
+# This function handles the make incident work for this file.
 def _make_incident(
     incident_id: str,
     opened_at: datetime,
@@ -25,6 +28,7 @@ def _make_incident(
     }
 
 
+# This class keeps the test developer incident views data and behavior in one place.
 class TestDeveloperIncidentViews(ViewTestMixin):
     def test_build_incident_trend_aggregates_last_seven_days(self):
         now = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)

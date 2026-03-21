@@ -24,11 +24,13 @@ INCIDENT_KEY_PREFIX = "live_incidents:detail:"
 INCIDENT_COUNTER_KEY = "live_incidents:counter"
 
 
+# This function handles the redis work for this file.
 def _redis() -> redis.Redis:
     url = current_app.config.get("REDIS_URL", "redis://redis:6379/0")
     return redis.from_url(url)
 
 
+# This function handles the serialize incident work for this file.
 def _serialize_incident(inc: dict) -> str:
     """JSON-encode an incident, converting datetimes to ISO strings."""
     def _convert(obj: Any) -> Any:
@@ -47,6 +49,7 @@ def _serialize_incident(inc: dict) -> str:
     return json.dumps(safe)
 
 
+# This function handles the deserialize incident work for this file.
 def _deserialize_incident(raw: str) -> dict:
     """JSON-decode an incident, converting ISO strings back to datetimes."""
     inc = json.loads(raw)
@@ -66,6 +69,7 @@ def _deserialize_incident(raw: str) -> dict:
     return inc
 
 
+# This function creates the incident work used in this file.
 def create_incident(
     error_code: str,
     route: str,
@@ -151,6 +155,7 @@ def create_incident(
     return incident
 
 
+# This function updates the incident work used in this file.
 def update_incident(incident_id: str, updates: dict) -> dict | None:
     """Update fields on a live incident in Redis."""
     r = _redis()
@@ -169,6 +174,7 @@ def update_incident(incident_id: str, updates: dict) -> dict | None:
     return incident
 
 
+# This function gets the incident work used in this file.
 def get_incident(incident_id: str) -> dict | None:
     """Get a single live incident by ID."""
     r = _redis()
@@ -178,6 +184,7 @@ def get_incident(incident_id: str) -> dict | None:
     return _deserialize_incident(raw)
 
 
+# This function gets the all incidents work used in this file.
 def get_all_incidents() -> list[dict]:
     """Return all live incidents, most recent first."""
     r = _redis()
@@ -192,6 +199,7 @@ def get_all_incidents() -> list[dict]:
     return incidents
 
 
+# This function handles the reset all work for this file.
 def reset_all() -> int:
     """Delete all live incidents from Redis. Returns count deleted."""
     r = _redis()

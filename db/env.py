@@ -1,3 +1,5 @@
+"""This file handles the env logic for the db part of the project."""
+
 from logging.config import fileConfig
 
 from alembic import context
@@ -25,6 +27,7 @@ target_metadata = db.metadata
 # my_important_option = config.get_main_option("my_important_option")
 
 
+# This function handles the run migrations offline work for this file.
 def run_migrations_offline():
     """
     Run migrations in 'offline' mode.
@@ -47,6 +50,7 @@ def run_migrations_offline():
         context.run_migrations()
 
 
+# This function handles the run migrations online work for this file.
 def run_migrations_online():
     """
     Run migrations in 'online' mode.

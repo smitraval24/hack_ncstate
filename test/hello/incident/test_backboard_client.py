@@ -14,6 +14,7 @@ from hello.incident.backboard_client import (
 )
 
 
+# This function runs the create assistant work used in this file.
 def test_create_assistant():
     """create_assistant should POST to /assistants and return AssistantInfo."""
 
@@ -40,6 +41,7 @@ def test_create_assistant():
     asyncio.run(_run())
 
 
+# This function runs the create thread work used in this file.
 def test_create_thread():
     """create_thread should POST to /assistants/{id}/threads."""
 
@@ -63,6 +65,7 @@ def test_create_thread():
     asyncio.run(_run())
 
 
+# This function runs the upload document work used in this file.
 def test_upload_document():
     """upload_document should upload a file to the assistant."""
 
@@ -90,6 +93,7 @@ def test_upload_document():
     asyncio.run(_run())
 
 
+# This function runs the add message work used in this file.
 def test_add_message():
     """add_message should POST form data to /threads/{id}/messages."""
 
@@ -123,6 +127,7 @@ def test_add_message():
     asyncio.run(_run())
 
 
+# This function runs the client requires context manager work used in this file.
 def test_client_requires_context_manager():
     """Calling methods without context manager should raise RuntimeError."""
 

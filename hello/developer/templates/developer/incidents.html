@@ -1,3 +1,5 @@
+<!-- This template shows the incidents page for the developer part of the app. -->
+
 {% extends "layouts/index.html" %}
 
 {% block title %}Incident Dashboard - Developer Tools{% endblock %}
@@ -175,6 +177,7 @@
         </div>
 
         <div class="overflow-x-auto">
+<!-- This table shows the main data for the page. -->
           <table class="min-w-full divide-y divide-gray-100">
             <thead class="bg-gradient-to-r from-gray-50 to-gray-100">
               <tr>
@@ -293,6 +296,7 @@
   </div>
 
   <!-- Chart.js Library -->
+<!-- This script adds page behavior after the HTML is loaded. -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 
   <script>

@@ -37,11 +37,13 @@ logger = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+# This function handles the get config work for this file.
 def _get_config(key: str) -> str:
     """Read a Backboard-related config value from the Flask app config."""
     return current_app.config.get(key, "")
 
 
+# This function handles the make client work for this file.
 def _make_client() -> BackboardClient:
     return BackboardClient(
         api_key=_get_config("BACKBOARD_API_KEY"),
@@ -49,6 +51,7 @@ def _make_client() -> BackboardClient:
     )
 
 
+# This function handles the run async work for this file.
 def _run_async(coro: Any) -> Any:
     """Run an async coroutine from synchronous Flask code."""
     try:
@@ -69,6 +72,7 @@ def _run_async(coro: Any) -> Any:
 # Public API
 # ---------------------------------------------------------------------------
 
+# This function handles the setup assistant work for this file.
 def setup_assistant(
     name: str = "Incident RAG Assistant",
     system_prompt: str | None = None,
@@ -109,6 +113,7 @@ def setup_assistant(
     return result
 
 
+# This function handles the index incident work for this file.
 def index_incident(incident: Any) -> str | None:
     """Index a resolved incident into Backboard for future RAG retrieval.
 
@@ -146,6 +151,7 @@ def index_incident(incident: Any) -> str | None:
         return None
 
 
+# This function handles the query similar work for this file.
 def query_similar(
     symptoms: str,
     markers: list[str] | None = None,
@@ -201,6 +207,7 @@ def query_similar(
     return response
 
 
+# This function analyzes the and store work used in this file.
 def analyze_and_store(
     incident: Any,
     db_session: Any,

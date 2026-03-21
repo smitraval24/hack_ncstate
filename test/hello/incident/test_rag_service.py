@@ -8,6 +8,7 @@ import pytest
 from hello.incident.backboard_client import RAGResponse
 
 
+# This class keeps the test ragservice data and behavior in one place.
 class TestRAGService:
     """Tests for rag_service functions.
 

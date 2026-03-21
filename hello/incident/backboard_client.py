@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Lightweight response containers
 # ---------------------------------------------------------------------------
 
+# This class keeps the assistant info data and behavior in one place.
 @dataclass
 class AssistantInfo:
     assistant_id: str
@@ -36,12 +37,14 @@ class AssistantInfo:
     raw: dict = field(default_factory=dict, repr=False)
 
 
+# This class keeps the thread info data and behavior in one place.
 @dataclass
 class ThreadInfo:
     thread_id: str
     raw: dict = field(default_factory=dict, repr=False)
 
 
+# This class keeps the document info data and behavior in one place.
 @dataclass
 class DocumentInfo:
     document_id: str
@@ -50,6 +53,7 @@ class DocumentInfo:
     raw: dict = field(default_factory=dict, repr=False)
 
 
+# This class keeps the ragresponse data and behavior in one place.
 @dataclass
 class RAGResponse:
     content: str
@@ -62,6 +66,7 @@ class RAGResponse:
 # Client
 # ---------------------------------------------------------------------------
 
+# This class keeps the backboard client data and behavior in one place.
 class BackboardClient:
     """Async context-manager client for Backboard.io.
 
