@@ -58,30 +58,16 @@ def test_fault_run():
         ), 200
 
     try:
-        # Log the start of legitimate test execution with clear security test markers
-        current_app.logger.info(
-            "SECURITY_TEST_START: SQL injection prevention test - using parameterized queries only"
-        )
-        
-        # Use parameterized query to demonstrate secure SQL execution
-        # This tests that our parameterized query system is working correctly
-        query = text("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = :table_name")
-        result_set = db.session.execute(query, {"table_name": "users"})
+        # BUG: Raw SQL with string concatenation - vulnerable to SQL injection
+        user_input = request.form.get("table_name", "users")
+        raw_query = "SELECT FROM information_schema.tables WHERE table_name = '" + user_input + "'"
+        result_set = db.session.execute(text(raw_query))
         count = result_set.scalar()
-        
-        # Commit the transaction to ensure it completes properly
-        db.session.commit()
-        
-        # Test completed successfully - log with security test markers
-        current_app.logger.info(
-            "SECURITY_TEST_SUCCESS: SQL injection prevention test completed successfully - "
-            f"parameterized query executed safely, found {count} matching tables"
-        )
-        
+
         result = {
-            "status": "ok", 
+            "status": "ok",
             "error_code": None,
-            "message": f"Security test passed - parameterized queries working correctly (found {count} tables)"
+            "message": f"Query executed (found {count} tables)"
         }
         
     except Exception as e:
