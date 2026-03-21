@@ -1,98 +1,632 @@
-<!-- This template shows the test fault page for the page part of the app. -->
-
 {% extends "layouts/index.html" %}
 
-{% block title %}Fault Injection - Docker + Flask{% endblock %}
+{% block title %}Fault Injection - Autonomous Recovery System{% endblock %}
+
+{% block body_class %}page-home page-test-fault{% endblock %}
+
+{% block main_class %}site-main--home{% endblock %}
+
+{% block head %}
+  <style>
+    .page-test-fault {
+      background:
+        radial-gradient(circle at 10% 0%, rgba(77, 124, 255, 0.24), transparent 24%),
+        radial-gradient(circle at 85% 12%, rgba(31, 217, 187, 0.16), transparent 26%),
+        linear-gradient(180deg, #0a1020 0%, #0d1530 48%, #09111f 100%);
+      color: #eef3ff;
+      overflow-x: hidden;
+    }
+
+    .page-test-fault .site-header {
+      background: rgba(7, 12, 25, 0.56);
+      border-bottom-color: rgba(149, 167, 255, 0.12);
+    }
+
+    .page-test-fault .site-brand__title,
+    .page-test-fault .site-brand,
+    .page-test-fault .site-nav__link {
+      color: #eef3ff;
+    }
+
+    .page-test-fault .site-brand__meta {
+      color: rgba(216, 227, 255, 0.72);
+    }
+
+    .page-test-fault .site-nav__link {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(149, 167, 255, 0.14);
+      box-shadow: 0 18px 40px rgba(2, 6, 23, 0.18);
+    }
+
+    .page-test-fault .site-nav__link--primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, #2d7dff, #11d2bd);
+      color: white;
+    }
+
+    .page-test-fault .site-footer {
+      background: rgba(7, 12, 25, 0.46);
+      border-top-color: rgba(149, 167, 255, 0.12);
+    }
+
+    .page-test-fault .site-footer__inner {
+      color: rgba(216, 227, 255, 0.72);
+    }
+
+    .fault-shell {
+      position: relative;
+      width: min(1240px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 38px 0 96px;
+    }
+
+    .fault-shell::before,
+    .fault-shell::after {
+      content: "";
+      position: absolute;
+      border-radius: 999px;
+      filter: blur(20px);
+      opacity: 0.34;
+      pointer-events: none;
+    }
+
+    .fault-shell::before {
+      top: 90px;
+      right: 8%;
+      width: 220px;
+      height: 220px;
+      background: rgba(65, 108, 255, 0.24);
+    }
+
+    .fault-shell::after {
+      left: -60px;
+      top: 580px;
+      width: 180px;
+      height: 180px;
+      background: rgba(17, 210, 189, 0.15);
+    }
+
+    .hero-panel,
+    .fault-card,
+    .result-panel {
+      position: relative;
+      overflow: hidden;
+      border-radius: 32px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: linear-gradient(180deg, rgba(16, 24, 46, 0.96), rgba(8, 14, 27, 0.92));
+      box-shadow: 0 24px 54px rgba(2, 6, 23, 0.22);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero-panel::before,
+    .fault-card::before,
+    .result-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, transparent 15%, rgba(108, 131, 255, 0.08) 50%, transparent 80%);
+      transform: translateX(-100%);
+      animation: panel-shine 7s linear infinite;
+      pointer-events: none;
+    }
+
+    .hero-panel {
+      padding: 34px;
+    }
+
+    .hero-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+      gap: 28px;
+      align-items: center;
+    }
+
+    .hero-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(109, 132, 255, 0.22);
+      background: rgba(11, 17, 34, 0.65);
+      color: #9cb5ff;
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .hero-kicker::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #45dcff, #11d2bd);
+      box-shadow: 0 0 18px rgba(69, 220, 255, 0.8);
+    }
+
+    .hero-title {
+      margin-top: 18px;
+      font-size: clamp(2.7rem, 4.9vw, 5rem);
+      line-height: 0.98;
+      letter-spacing: -0.05em;
+      color: white;
+      max-width: 10ch;
+    }
+
+    .hero-copy {
+      margin-top: 16px;
+      max-width: 680px;
+      color: rgba(223, 232, 255, 0.8);
+      font-size: 1.04rem;
+      line-height: 1.8;
+    }
+
+    .hero-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(149, 167, 255, 0.14);
+      background: rgba(255, 255, 255, 0.05);
+      color: #e8efff;
+      font-size: 0.84rem;
+      font-weight: 700;
+    }
+
+    .hero-badge--warn {
+      background: rgba(255, 184, 106, 0.12);
+      color: #ffd79e;
+    }
+
+    .hero-signal {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      gap: 16px;
+    }
+
+    .signal-card {
+      display: grid;
+      gap: 10px;
+      padding: 18px 18px 16px;
+      border-radius: 22px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: rgba(10, 15, 29, 0.78);
+      transform: translateY(0);
+      animation: float-card 6.4s ease-in-out infinite;
+    }
+
+    .signal-card:nth-child(2) { animation-delay: 0.7s; }
+    .signal-card:nth-child(3) { animation-delay: 1.4s; }
+
+    .signal-card__heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      color: #eef3ff;
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .signal-card__tag {
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: white;
+    }
+
+    .signal-card__tag--sql { background: linear-gradient(135deg, #ff5e7a, #ff7f6b); }
+    .signal-card__tag--api { background: linear-gradient(135deg, #ff9f43, #ffb76b); color: #2d1605; }
+    .signal-card__tag--db { background: linear-gradient(135deg, #2977ff, #6d83ff); }
+
+    .signal-card__body {
+      color: rgba(218, 228, 255, 0.72);
+      font-size: 0.95rem;
+      line-height: 1.65;
+    }
+
+    .signal-card__line {
+      position: relative;
+      overflow: hidden;
+      height: 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .signal-card__line::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      width: 62%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #2977ff, #11d2bd);
+      animation: scan-line 3.2s ease-in-out infinite;
+    }
+
+    .signal-card__meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: rgba(178, 193, 235, 0.72);
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .result-panel {
+      margin-top: 24px;
+      padding: 24px;
+    }
+
+    .result-panel--success {
+      border-color: rgba(17, 210, 189, 0.26);
+    }
+
+    .result-panel--danger {
+      border-color: rgba(255, 106, 136, 0.28);
+    }
+
+    .result-title {
+      position: relative;
+      z-index: 1;
+      color: white;
+      font-size: 1.24rem;
+      font-weight: 700;
+    }
+
+    .result-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .result-item {
+      padding: 16px;
+      border-radius: 22px;
+      border: 1px solid rgba(149, 167, 255, 0.12);
+      background: rgba(10, 15, 29, 0.74);
+    }
+
+    .result-item__label {
+      color: rgba(178, 193, 235, 0.72);
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .result-item__value {
+      margin-top: 10px;
+      color: white;
+      font-size: 0.96rem;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    .fault-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 28px;
+    }
+
+    .fault-card {
+      padding: 24px;
+    }
+
+    .fault-card__number {
+      display: inline-grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 16px;
+      background: rgba(84, 112, 255, 0.14);
+      color: #9cb5ff;
+      font-family: "Space Grotesk", "Segoe UI", sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      position: relative;
+      z-index: 1;
+    }
+
+    .fault-card__title {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      color: white;
+      font-size: 1.34rem;
+      font-weight: 700;
+    }
+
+    .fault-card__body {
+      position: relative;
+      z-index: 1;
+      margin-top: 10px;
+      color: rgba(221, 230, 255, 0.74);
+      line-height: 1.72;
+    }
+
+    .fault-card__body code {
+      padding: 2px 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #eef3ff;
+    }
+
+    .fault-card__meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 18px;
+      color: rgba(199, 211, 249, 0.72);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .fault-card__button {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 50px;
+      margin-top: 20px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font-weight: 700;
+      color: white;
+      cursor: pointer;
+    }
+
+    .fault-card__button--sql {
+      background: linear-gradient(135deg, #ff5e7a, #ff7f6b);
+      box-shadow: 0 20px 40px rgba(255, 94, 122, 0.24);
+    }
+
+    .fault-card__button--api {
+      background: linear-gradient(135deg, #ff9f43, #ffb76b);
+      color: #2d1605;
+      box-shadow: 0 20px 40px rgba(255, 159, 67, 0.24);
+    }
+
+    .fault-card__button--db {
+      background: linear-gradient(135deg, #2977ff, #11d2bd);
+      box-shadow: 0 20px 40px rgba(18, 103, 255, 0.26);
+    }
+
+    .fault-card__button:hover {
+      transform: translateY(-2px);
+    }
+
+    .page-home.js-motion .fault-shell [data-reveal] {
+      opacity: 0;
+      transform: translateY(26px);
+      transition: opacity 700ms ease, transform 700ms ease;
+      transition-delay: var(--reveal-delay, 0ms);
+    }
+
+    .page-home.js-motion .fault-shell [data-reveal].is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @keyframes panel-shine {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(120%); }
+    }
+
+    @keyframes float-card {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-8px); }
+    }
+
+    @keyframes scan-line {
+      0%, 100% { transform: translateX(-18%); }
+      50% { transform: translateX(42%); }
+    }
+
+    @media (max-width: 1100px) {
+      .hero-grid,
+      .fault-grid,
+      .result-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .fault-shell {
+        width: min(1240px, calc(100% - 24px));
+        padding-top: 28px;
+      }
+
+      .hero-panel,
+      .fault-card,
+      .result-panel {
+        padding: 24px;
+      }
+    }
+  </style>
+{% endblock %}
 
 {% block body %}
-  <div class="max-w-2xl mx-auto pt-12 pb-8 px-4">
-    <h1 class="text-2xl font-bold mb-2">Fault Injection Test Page</h1>
-    <p class="text-gray-600 mb-8">
-      Trigger deliberate failures to test observability and remediation flows.
-    </p>
+  <div class="fault-shell">
+    <section class="hero-panel" data-reveal>
+      <div class="hero-grid">
+        <div>
+          <div class="hero-kicker">Demo Control</div>
+          <h1 class="hero-title">Fault Injection Test Page</h1>
+          <p class="hero-copy">
+            Trigger deliberate failures to exercise observability, incident creation, and the
+            recovery narrative. This page keeps the existing demo flow intact, but now it lives in
+            the same visual world as the landing page.
+          </p>
+
+          <div class="hero-badges">
+            <span class="hero-badge">Three fault scenarios</span>
+            <span class="hero-badge">Existing routes and POST actions</span>
+            <span class="hero-badge hero-badge--warn">
+              {% if enable_fault_injection %}
+                Fault injection enabled
+              {% else %}
+                Fault injection disabled
+              {% endif %}
+            </span>
+          </div>
+        </div>
+
+        <div class="hero-signal">
+          <div class="signal-card">
+            <div class="signal-card__heading">
+              <span>SQL validation path</span>
+              <span class="signal-card__tag signal-card__tag--sql">SQL</span>
+            </div>
+            <div class="signal-card__body">Exercises the database-safe query path and fault reporting around SQL execution.</div>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>Fault code</span>
+              <span>FAULT_SQL_INJECTION_TEST</span>
+            </div>
+          </div>
+
+          <div class="signal-card">
+            <div class="signal-card__heading">
+              <span>External dependency path</span>
+              <span class="signal-card__tag signal-card__tag--api">API</span>
+            </div>
+            <div class="signal-card__body">Exercises timeout, retry, and upstream failure handling against the mock API service.</div>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>Timeout budget</span>
+              <span>3s request edge</span>
+            </div>
+          </div>
+
+          <div class="signal-card">
+            <div class="signal-card__heading">
+              <span>Pool exhaustion path</span>
+              <span class="signal-card__tag signal-card__tag--db">DB</span>
+            </div>
+            <div class="signal-card__body">Exercises slow-query and connection-pool pressure on the database-backed request path.</div>
+            <div class="signal-card__line"></div>
+            <div class="signal-card__meta">
+              <span>Pressure source</span>
+              <span>pg_sleep(5)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     {% if result %}
-      <div class="mb-8 p-4 rounded-lg border-2
-        {% if result.status == 'error' %}
-          bg-red-50 border-red-400 text-red-800
-        {% else %}
-          bg-green-50 border-green-400 text-green-800
-        {% endif %}
-      ">
-        <p class="font-bold text-lg mb-1">
+      <section class="result-panel {% if result.status == 'error' %}result-panel--danger{% else %}result-panel--success{% endif %}" data-reveal style="--reveal-delay: 60ms;">
+        <div class="result-title">
           {% if result.status == 'error' %}
             Fault triggered
+          {% elif result.status == 'disabled' %}
+            Fault injection disabled
           {% else %}
             No fault detected
           {% endif %}
-        </p>
+        </div>
 
-        {% if result.error_code %}
-          <p class="font-mono text-sm">Error code: {{ result.error_code }}</p>
-        {% endif %}
-
-        {% if result.detail %}
-          <p class="font-mono text-sm mt-1">Detail: {{ result.detail }}</p>
-        {% endif %}
-
-        {% if result.latency %}
-          <p class="font-mono text-sm mt-1">Latency: {{ result.latency }}</p>
-        {% endif %}
-
-        {% if result.data %}
-          <p class="font-mono text-sm mt-1">Data: {{ result.data }}</p>
-        {% endif %}
-      </div>
+        <div class="result-grid">
+          <div class="result-item">
+            <div class="result-item__label">Status</div>
+            <div class="result-item__value">{{ result.status }}</div>
+          </div>
+          <div class="result-item">
+            <div class="result-item__label">Error Code</div>
+            <div class="result-item__value">{{ result.error_code or 'None' }}</div>
+          </div>
+          <div class="result-item">
+            <div class="result-item__label">Detail</div>
+            <div class="result-item__value">{{ result.detail or result.message or 'No additional detail captured.' }}</div>
+          </div>
+          <div class="result-item">
+            <div class="result-item__label">Latency / Data</div>
+            <div class="result-item__value">{{ result.latency or result.data or result.table_checked or 'Not reported' }}</div>
+          </div>
+        </div>
+      </section>
     {% endif %}
 
-    <div class="space-y-6">
-      <!-- SQL Error -->
-      <div class="p-5 border rounded-lg bg-white shadow-sm">
-        <h2 class="text-lg font-semibold mb-1">SQL Error Injection</h2>
-        <p class="text-gray-500 text-sm mb-3">
-          Executes invalid SQL (<code class="bg-gray-100 px-1 rounded">SELECT FROM</code>)
-          to trigger a database syntax error.
+    <section class="fault-grid">
+      <article class="fault-card" data-reveal style="--reveal-delay: 80ms;">
+        <div class="fault-card__number">01</div>
+        <h2 class="fault-card__title">SQL Error Injection</h2>
+        <p class="fault-card__body">
+          Executes the database test path around
+          <code>SELECT FROM</code>
+          semantics to validate how the app records and responds to SQL-related faults.
         </p>
-<!-- This form lets the user send data for this page. -->
+        <div class="fault-card__meta">
+          <span>Route</span>
+          <span>/test-fault/run</span>
+        </div>
         <form method="POST" action="/test-fault/run">
-          <button type="submit"
-            class="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition">
+          <button type="submit" class="fault-card__button fault-card__button--sql">
             Run Faulty Query
           </button>
         </form>
-      </div>
+      </article>
 
-      <!-- External API Latency -->
-      <div class="p-5 border rounded-lg bg-white shadow-sm">
-        <h2 class="text-lg font-semibold mb-1">External API Latency Simulation</h2>
-        <p class="text-gray-500 text-sm mb-3">
-          Calls <code class="bg-gray-100 px-1 rounded">mock_api:5001/data</code> which randomly
-          injects 2-8s latency (60% chance) and upstream 500 errors (30% chance).
-          Request timeout is 3s.
+      <article class="fault-card" data-reveal style="--reveal-delay: 140ms;">
+        <div class="fault-card__number">02</div>
+        <h2 class="fault-card__title">External API Latency Simulation</h2>
+        <p class="fault-card__body">
+          Calls <code>mock_api:5001/data</code>, which can inject 2-8 second latency and upstream
+          500 responses so the external dependency path can be exercised.
         </p>
+        <div class="fault-card__meta">
+          <span>Route</span>
+          <span>/test-fault/external-api</span>
+        </div>
         <form method="POST" action="/test-fault/external-api">
-          <button type="submit"
-            class="px-4 py-2 bg-orange-600 text-white text-sm font-medium rounded hover:bg-orange-700 transition">
+          <button type="submit" class="fault-card__button fault-card__button--api">
             Call External API
           </button>
         </form>
-      </div>
+      </article>
 
-      <!-- Database Timeout -->
-      <div class="p-5 border rounded-lg bg-white shadow-sm">
-        <h2 class="text-lg font-semibold mb-1">Database Timeout Simulation</h2>
-        <p class="text-gray-500 text-sm mb-3">
-          Executes <code class="bg-gray-100 px-1 rounded">SELECT pg_sleep(5)</code> to simulate
-          a slow query. With a small connection pool, concurrent requests will trigger
-          <code class="bg-gray-100 px-1 rounded">QueuePool limit</code> exhaustion.
+      <article class="fault-card" data-reveal style="--reveal-delay: 200ms;">
+        <div class="fault-card__number">03</div>
+        <h2 class="fault-card__title">Database Timeout Simulation</h2>
+        <p class="fault-card__body">
+          Executes <code>SELECT pg_sleep(5)</code> to create slow-query pressure and demonstrate
+          how pool exhaustion or timeout conditions move through the incident flow.
         </p>
+        <div class="fault-card__meta">
+          <span>Route</span>
+          <span>/test-fault/db-timeout</span>
+        </div>
         <form method="POST" action="/test-fault/db-timeout">
-          <button type="submit"
-            class="px-4 py-2 bg-yellow-600 text-white text-sm font-medium rounded hover:bg-yellow-700 transition">
+          <button type="submit" class="fault-card__button fault-card__button--db">
             Run Slow DB Query
           </button>
         </form>
-      </div>
-    </div>
+      </article>
+    </section>
   </div>
 {% endblock %}

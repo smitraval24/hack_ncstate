@@ -14,3 +14,11 @@ class TestPage(ViewTestMixin):
         assert response.status_code == 200
         assert b"Autonomous Recovery System" in response.data
         assert b"From fault signal to production fix, automatically." in response.data
+
+    def test_test_fault_page_matches_landing_style_direction(self):
+        response = self.client.get(url_for("page.test_fault"))
+
+        assert response.status_code == 200
+        assert b"Fault Injection Test Page" in response.data
+        assert b"Demo Control" in response.data
+        assert b"External API Latency Simulation" in response.data
