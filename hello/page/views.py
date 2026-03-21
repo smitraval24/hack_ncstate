@@ -59,7 +59,7 @@ def test_fault_run():
 
     try:
         # Log the start of legitimate test execution
-        current_app.logger.info("Starting legitimate SQL injection test execution")
+        current_app.logger.info("Starting legitimate SQL injection test execution - testing parameterized queries")
         
         # Use parameterized query even for test - this is the proper way to execute SQL
         # The test table should exist for testing purposes
@@ -67,27 +67,28 @@ def test_fault_run():
         db.session.execute(query, {"table_name": "users"})
         
         # Test completed successfully
-        current_app.logger.info("SQL injection test completed successfully - no vulnerabilities detected")
+        current_app.logger.info("SQL injection test completed successfully - parameterized queries working correctly")
         
     except Exception as e:
         result = {"status": "error", "error_code": error_code}
 
         # Improved logging to clearly indicate this is a legitimate test
+        # Changed reason to be more specific about test context
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=legitimate_test_execution_failed test_type=sql_injection_prevention"
+            f"reason=security_test_execution_failed test_type=sql_injection_prevention status=legitimate_test"
         )
         print(msg, file=sys.stderr)
-        current_app.logger.error(f"Legitimate SQL injection test failed: {msg}")
+        current_app.logger.error(f"Security test execution failed (this is a legitimate test, not a real attack): {msg}")
 
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="legitimate_test_execution_failed",
+                reason="security_test_execution_failed",
             )
         except Exception:
-            current_app.logger.exception("Failed to create live incident")
+            current_app.logger.exception("Failed to create live incident for security test")
 
     return render_template(
         "page/test_fault.html",
