@@ -690,6 +690,7 @@
 
       const panel = faultResultSlot.querySelector('.result-panel');
       if (panel) {
+        panel.classList.add('is-visible');
         panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     }
@@ -740,7 +741,7 @@
           });
           const html = await response.text();
           showInlineFaultResult(html);
-          setFaultStatus(form, response.ok ? 'Completed without a page reload.' : 'Fault captured without a page reload.');
+          setFaultStatus(form, '');
         } catch (error) {
           showInlineFaultError(error.message || 'Unknown client error');
           setFaultStatus(form, 'Request failed before the server responded.');

@@ -27,6 +27,8 @@ class TestPage(ViewTestMixin):
         assert b"External API Latency Simulation" in response.data
         assert b"Build local" in response.data
         assert b"data-fault-form" in response.data
+        assert b"panel.classList.add('is-visible');" in response.data
+        assert b"Fault captured without a page reload." not in response.data
 
     def test_sql_fault_route_wrapper_delegates_to_page_views(self, monkeypatch):
         wrapped = Mock(return_value=("wrapped-response", 200))
