@@ -17,6 +17,7 @@ from hello.aws.cloudwatch_logs import (
     get_cloudwatch_log_groups,
 )
 from hello.incident.live_store import (
+    create_incident as create_live_incident,
     get_all_incidents as get_live_incidents,
     get_incident as get_live_incident,
     reset_all as reset_live_incidents,
@@ -738,6 +739,15 @@ def _get_incident_by_id(incident_id: str) -> dict | None:
     return next((i for i in incidents if str(i["id"]) == str(incident_id)), None)
 
 
+def _default_route_for_fault_code(fault_code: str) -> str:
+    route_map = {
+        "FAULT_SQL_INJECTION_TEST": "/test-fault/run",
+        "FAULT_EXTERNAL_API_LATENCY": "/test-fault/external-api",
+        "FAULT_DB_TIMEOUT": "/test-fault/db-timeout",
+    }
+    return route_map.get(fault_code, "/test-fault")
+
+
 # This function handles the incident to document work for this file.
 def _incident_to_document(incident: dict) -> str:
     """Serialize an incident dict into a text document for RAG indexing."""
@@ -879,12 +889,14 @@ def pipeline_pending():
     """
     data = request.get_json(force=True, silent=True) or {}
     fault_code = data.get("fault_code", "")
+    route = data.get("route") or _default_route_for_fault_code(fault_code)
+    reason = data.get("reason") or "pipeline_pending"
     if not fault_code:
         return jsonify({"success": False, "error": "fault_code required"}), 400
 
     updated = []
     for inc in get_live_incidents():
-        if inc.get("error_code") == fault_code and inc.get("status") == "detected":
+        if inc.get("error_code") == fault_code and inc.get("status") != "resolved":
             result = update_live_incident(inc["id"], {
                 "status": "in_progress",
                 "root_cause": {
@@ -900,6 +912,31 @@ def pipeline_pending():
             })
             if result:
                 updated.append(inc["id"])
+
+    if not updated:
+        created = create_live_incident(
+            error_code=fault_code,
+            route=route,
+            reason=reason,
+        )
+        result = update_live_incident(
+            created["id"],
+            {
+                "status": "in_progress",
+                "root_cause": {
+                    "source": "rag",
+                    "confidence_score": None,
+                    "explanation": data.get("rag_analysis", ""),
+                },
+                "remediation": {
+                    "action_type": "auto_fix_pushed",
+                    "parameters": {"claude_output": data.get("claude_output", "")},
+                    "execution_timestamp": datetime.now(),
+                },
+            },
+        )
+        if result:
+            updated.append(created["id"])
 
     logger.info("Pipeline pending: updated %s for %s", updated, fault_code)
     return jsonify({"success": True, "updated": updated})
@@ -931,20 +968,64 @@ def pipeline_callback():
         return jsonify({"success": False, "error": "status must be 'success' or 'failure'"}), 400
 
     updated = []
-    for inc in get_live_incidents():
-        if inc.get("error_code") not in fault_codes:
-            continue
-        if inc.get("status") == "resolved":
+    live_incidents = get_live_incidents()
+
+    for fault_code in fault_codes:
+        matched = False
+
+        for inc in live_incidents:
+            if inc.get("error_code") != fault_code:
+                continue
+            if inc.get("status") == "resolved":
+                continue
+
+            matched = True
+            if pipeline_status == "success":
+                updates = {
+                    "status": "resolved",
+                    "timestamp_resolved": now,
+                    "verification": {
+                        "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                        "error_rate_after": 0,
+                        "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                        "latency_after": 0,
+                        "health_check_status": "passed",
+                        "success": True,
+                    },
+                }
+            else:
+                updates = {
+                    "status": "in_progress",
+                    "verification": {
+                        "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                        "error_rate_after": None,
+                        "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                        "latency_after": None,
+                        "health_check_status": "failed",
+                        "success": False,
+                    },
+                }
+
+            result = update_live_incident(inc["id"], updates)
+            if result:
+                updated.append(inc["id"])
+
+        if matched:
             continue
 
+        created = create_live_incident(
+            error_code=fault_code,
+            route=_default_route_for_fault_code(fault_code),
+            reason=f"pipeline_{pipeline_status}",
+        )
         if pipeline_status == "success":
             updates = {
                 "status": "resolved",
                 "timestamp_resolved": now,
                 "verification": {
-                    "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                    "error_rate_before": created.get("symptoms", {}).get("error_rate_value", 0),
                     "error_rate_after": 0,
-                    "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
                     "latency_after": 0,
                     "health_check_status": "passed",
                     "success": True,
@@ -954,18 +1035,18 @@ def pipeline_callback():
             updates = {
                 "status": "in_progress",
                 "verification": {
-                    "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 0),
+                    "error_rate_before": created.get("symptoms", {}).get("error_rate_value", 0),
                     "error_rate_after": None,
-                    "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
                     "latency_after": None,
                     "health_check_status": "failed",
                     "success": False,
                 },
             }
 
-        result = update_live_incident(inc["id"], updates)
+        result = update_live_incident(created["id"], updates)
         if result:
-            updated.append(inc["id"])
+            updated.append(created["id"])
 
     logger.info(
         "Pipeline callback (%s): updated %s for %s",

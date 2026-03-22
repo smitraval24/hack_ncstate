@@ -151,3 +151,69 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert b"Root-cause analysis is still pending for this incident." in response.data
         assert b"Not available for this incident." in response.data
         assert b"Resolve this incident to unlock the existing knowledge-base and cache actions." in response.data
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views.create_live_incident")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_pending_creates_live_incident_when_missing(
+        self,
+        mock_get_live_incidents,
+        mock_create_live_incident,
+        mock_update_live_incident,
+    ):
+        mock_get_live_incidents.return_value = []
+        mock_create_live_incident.return_value = {"id": "LIVE-0001"}
+        mock_update_live_incident.return_value = {"id": "LIVE-0001"}
+
+        response = self.client.post(
+            url_for("developer.pipeline_pending"),
+            json={
+                "fault_code": "FAULT_SQL_INJECTION_TEST",
+                "route": "/test-fault/run",
+                "reason": "invalid_sql_executed",
+                "rag_analysis": "Malformed SQL detected",
+                "claude_output": "Applied parameterized query fix",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["updated"] == ["LIVE-0001"]
+        mock_create_live_incident.assert_called_once_with(
+            error_code="FAULT_SQL_INJECTION_TEST",
+            route="/test-fault/run",
+            reason="invalid_sql_executed",
+        )
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views.create_live_incident")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_callback_creates_resolved_incident_when_missing(
+        self,
+        mock_get_live_incidents,
+        mock_create_live_incident,
+        mock_update_live_incident,
+    ):
+        mock_get_live_incidents.return_value = []
+        mock_create_live_incident.return_value = {
+            "id": "LIVE-0002",
+            "symptoms": {"error_rate_value": 1, "latency_p95_value": 5.0},
+        }
+        mock_update_live_incident.return_value = {"id": "LIVE-0002"}
+
+        response = self.client.post(
+            url_for("developer.pipeline_callback"),
+            json={
+                "fault_codes": ["FAULT_DB_TIMEOUT"],
+                "status": "success",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["updated"] == ["LIVE-0002"]
+        mock_create_live_incident.assert_called_once_with(
+            error_code="FAULT_DB_TIMEOUT",
+            route="/test-fault/db-timeout",
+            reason="pipeline_success",
+        )
+        assert mock_update_live_incident.call_args.args[0] == "LIVE-0002"
+        assert mock_update_live_incident.call_args.args[1]["status"] == "resolved"
