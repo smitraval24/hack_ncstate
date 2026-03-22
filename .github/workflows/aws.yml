@@ -101,17 +101,37 @@ jobs:
       run: |
         APP_BASE="${DASHBOARD_URL%/}"
         BUILD_URL="$APP_BASE/up/build"
-        for attempt in $(seq 1 45); do
+        lookup_live_sha() {
           RESPONSE=$(curl -fsS "$BUILD_URL" || true)
-          LIVE_SHA=$(printf '%s' "$RESPONSE" | jq -r '.build_sha // empty' 2>/dev/null || true)
+          printf '%s' "$RESPONSE" | jq -r '.build_sha // empty' 2>/dev/null || true
+        }
+
+        for attempt in $(seq 1 18); do
+          LIVE_SHA=$(lookup_live_sha)
           if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
             echo "Live app is serving build $LIVE_SHA"
             exit 0
           fi
-          echo "Waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/45, saw '${LIVE_SHA:-none}')"
+          echo "Fast check waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/18, saw '${LIVE_SHA:-none}')"
           sleep 5
         done
-        echo "Timed out waiting for the live app to serve build $EXPECTED_SHA"
+
+        echo "Fast build verification timed out; falling back to ECS service stability"
+        aws ecs wait services-stable \
+          --cluster "${ECS_CLUSTER}" \
+          --services "${ECS_SERVICE}"
+
+        for attempt in $(seq 1 18); do
+          LIVE_SHA=$(lookup_live_sha)
+          if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
+            echo "Live app is serving build $LIVE_SHA after ECS stabilization"
+            exit 0
+          fi
+          echo "Post-stability check waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/18, saw '${LIVE_SHA:-none}')"
+          sleep 5
+        done
+
+        echo "Timed out waiting for the live app to serve build $EXPECTED_SHA even after ECS stabilization"
         exit 1
 
     # Notify dashboard only after the live app serves the new build SHA.
