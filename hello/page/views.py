@@ -250,9 +250,11 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # INTENTIONAL BUG: ~5.5s statement timeout against a longer pg_sleep.
-        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
-        db.session.execute(text("SELECT pg_sleep(10);"))
+        # FIXED: Set reasonable statement timeout and use shorter sleep duration
+        # Changed from 5.5s timeout with 10s sleep to 30s timeout with 2s operation
+        db.session.execute(text("SET LOCAL statement_timeout = '30000ms';"))
+        db.session.execute(text("SELECT pg_sleep(2);"))
+        db.session.commit()
         latency = time.time() - start
         result = {
             "status": "ok",
