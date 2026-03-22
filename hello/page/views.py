@@ -6,10 +6,10 @@ import time
 import logging
 from datetime import datetime
 from importlib.metadata import version
-import re
+from urllib.parse import urlparse, urljoin
 
 import requests
-from flask import Blueprint, render_template, current_app, abort, request
+from flask import Blueprint, render_template, current_app, abort
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -32,43 +32,12 @@ def _log_fault_event(message: str) -> None:
     current_app.logger.error(message)
 
 
-def _sanitize_input(input_value: str) -> str:
-    """Sanitize input to prevent SQL injection attacks."""
-    if not isinstance(input_value, str):
-        return str(input_value)
-    
-    # Remove potentially dangerous characters
-    sanitized = re.sub(r'[;\'"\\`]', '', input_value)
-    # Limit length to prevent buffer overflow
-    sanitized = sanitized[:100]
-    return sanitized
-
-
-def _validate_sql_query(query: str) -> bool:
-    """Validate SQL query to ensure it's safe for execution."""
-    # Only allow specific safe queries for testing
-    safe_queries = [
-        "SELECT 1 AS test_column",
-        "SELECT COUNT(*) FROM information_schema.tables",
-        "SELECT current_timestamp"
-    ]
-    
-    normalized_query = ' '.join(query.strip().lower().split())
-    safe_normalized = [' '.join(q.strip().lower().split()) for q in safe_queries]
-    
-    return normalized_query in safe_normalized
-
-
 def _resolve_live_incidents(error_code: str, route: str, latency: float | None = None) -> list[str]:
     """Mark matching live incidents resolved once a fault path starts succeeding again."""
     now = datetime.now()
     updated: list[str] = []
 
     try:
-        # Sanitize inputs to prevent injection
-        error_code = _sanitize_input(error_code)
-        route = _sanitize_input(route)
-        
         for inc in get_live_incidents():
             if inc.get("error_code") != error_code or inc.get("route") != route:
                 continue
@@ -96,6 +65,39 @@ def _resolve_live_incidents(error_code: str, route: str, latency: float | None =
         current_app.logger.exception("Failed to resolve live incidents for %s", error_code)
 
     return updated
+
+
+def _validate_and_sanitize_url(base_url: str) -> str:
+    """Validate and sanitize base URL to prevent URL injection attacks."""
+    if not base_url:
+        raise ValueError("Base URL cannot be empty")
+    
+    # Parse the URL to validate its components
+    parsed = urlparse(base_url)
+    
+    # Only allow http and https protocols
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Only HTTP and HTTPS protocols are allowed")
+    
+    # Ensure hostname is present and valid
+    if not parsed.netloc:
+        raise ValueError("Invalid hostname in URL")
+    
+    # Prevent localhost/private IP access in production (security measure)
+    hostname = parsed.hostname
+    if hostname:
+        hostname_lower = hostname.lower()
+        # Block obviously dangerous hostnames
+        blocked_hostnames = ['127.0.0.1', 'localhost', '0.0.0.0', '::1']
+        if hostname_lower in blocked_hostnames and not DEBUG:
+            raise ValueError("Access to localhost/loopback addresses not allowed in production")
+    
+    # Reconstruct clean URL (removes any malicious components)
+    clean_url = f"{parsed.scheme}://{parsed.netloc}"
+    if parsed.path:
+        clean_url += parsed.path.rstrip('/')
+    
+    return clean_url
 
 
 # This function handles the home work for this file.
@@ -142,22 +144,12 @@ def test_fault_run():
         ), 200
 
     try:
-        # Get the test query parameter if provided, default to safe query
-        test_query = request.form.get("test_query", "SELECT 1 AS test_column")
-        
-        # Validate the query to prevent SQL injection
-        if not _validate_sql_query(test_query):
-            raise ValueError("Invalid or potentially unsafe SQL query detected")
-        
-        # Use parameterized query for safety
-        safe_query = text("SELECT 1 AS test_column")
-        db.session.execute(safe_query)
-        
+        db.session.execute(text("SELECT 1 AS test_column"))
         _resolve_live_incidents(error_code, "/test-fault/run")
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-        error_msg = _sanitize_input(str(e)[:100])
+        error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
         msg = (
             f"{error_code} route=/test-fault/run "
             f"reason=invalid_sql_executed error={error_msg}"
@@ -192,12 +184,50 @@ def test_fault_external_api():
     overall_start = time.time()
 
     try:
+        # Get and validate base URL with security checks
         mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        url = f"{mock_api_base}/data"
-        if not url.startswith(('http://', 'https://')):
-            raise ValueError("Invalid URL protocol")
+        
+        # Validate and sanitize the base URL to prevent URL injection
+        try:
+            clean_base_url = _validate_and_sanitize_url(mock_api_base)
+        except ValueError as ve:
+            total_latency = time.time() - overall_start
+            result = {
+                "status": "error",
+                "error_code": "CONFIGURATION_ERROR",
+                "detail": f"Invalid base URL: {str(ve)}",
+                "latency": f"{total_latency:.2f}s",
+            }
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=invalid_base_url latency={total_latency:.2f}"
+            )
+            _log_fault_event(msg)
+            try:
+                create_live_incident(
+                    error_code=error_code,
+                    route="/test-fault/external-api",
+                    reason="invalid_base_url",
+                    latency=total_latency
+                )
+            except Exception as incident_error:
+                current_app.logger.exception(f"Failed to create live incident: {incident_error}")
+            
+            return render_template(
+                "page/test_fault.html",
+                flask_ver=version("flask"),
+                python_ver=PYTHON_VER,
+                debug=DEBUG,
+                enable_fault_injection=True,
+                result=result,
+            ), 400
+        
+        # Safely construct the URL using urljoin
+        url = urljoin(clean_base_url.rstrip('/') + '/', 'data')
+        
+        # Validate timeout parameter
         timeout_seconds = float(os.environ.get("EXTERNAL_API_BASE_TIMEOUT", "0.01"))
-        timeout_seconds = min(max(timeout_seconds, 0.01), 1.0)
+        timeout_seconds = min(max(timeout_seconds, 0.01), 5.0)  # Increased max timeout to 5 seconds
 
         response = requests.get(url, timeout=timeout_seconds)
         total_latency = time.time() - overall_start
@@ -221,7 +251,7 @@ def test_fault_external_api():
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": str(e),
+            "detail": "Request timeout - external service is too slow",
             "latency": f"{total_latency:.2f}s",
         }
         msg = (
@@ -243,7 +273,7 @@ def test_fault_external_api():
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": str(e),
+            "detail": "Connection failed - external service is unreachable",
             "latency": f"{total_latency:.2f}s",
         }
         msg = (
@@ -266,7 +296,7 @@ def test_fault_external_api():
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": str(e),
+            "detail": f"HTTP error: {e.response.status_code if e.response else 'Unknown'}" if e.response else "HTTP error occurred",
             "latency": f"{total_latency:.2f}s",
         }
         msg = (
@@ -284,35 +314,13 @@ def test_fault_external_api():
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
-    except ValueError as ve:
-        total_latency = time.time() - overall_start
-        result = {
-            "status": "error",
-            "error_code": "CONFIGURATION_ERROR",
-            "detail": str(ve),
-            "latency": f"{total_latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=configuration_error latency={total_latency:.2f}"
-        )
-        _log_fault_event(msg)
-        try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason="configuration_error",
-                latency=total_latency
-            )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
     except Exception as e:
         # Handle unexpected errors in the endpoint itself
         total_latency = time.time() - overall_start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": f"endpoint_error: {str(e)[:200]}",
+            "detail": "Internal error occurred",  # Don't expose internal error details
             "latency": f"{total_latency:.2f}s",
         }
         msg = (
