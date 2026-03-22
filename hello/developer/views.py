@@ -566,6 +566,7 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
                 verification_cache[cache_key] = _verify_fault_route(
                     inc.get("error_code", ""),
                     inc.get("route") or None,
+                    str(inc.get("commit_sha") or ""),
                 )
 
             verified_ok, health_status, latency_after = verification_cache[cache_key]
@@ -592,6 +593,10 @@ def _fault_verification_base_url() -> str:
     if explicit:
         return explicit.rstrip("/")
 
+    dashboard_url = os.getenv("DASHBOARD_URL", "").strip()
+    if dashboard_url:
+        return dashboard_url.rstrip("/")
+
     health_url = os.getenv("HEALTH_CHECK_URL", "").strip()
     if health_url:
         parsed = urlsplit(health_url)
@@ -604,18 +609,63 @@ def _fault_verification_base_url() -> str:
     return "http://localhost:8000"
 
 
+def _build_sha_is_live(
+    base_url: str,
+    expected_build_sha: str,
+    timeout: float,
+) -> tuple[bool, str]:
+    """Return whether the externally reachable app is serving the expected build."""
+    build_url = f"{base_url}/up/build"
+
+    try:
+        response = http_requests.get(build_url, timeout=min(timeout, 5.0))
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        logger.warning(
+            "Build verification request failed for %s via %s: %s",
+            expected_build_sha[:12],
+            build_url,
+            exc,
+        )
+        return False, "build_unreachable"
+
+    observed_build_sha = str(payload.get("build_sha") or "").strip()
+    if observed_build_sha == expected_build_sha:
+        return True, "build_matched"
+
+    logger.warning(
+        "Expected build %s but %s is live at %s",
+        expected_build_sha[:12],
+        (observed_build_sha[:12] or "unknown"),
+        build_url,
+    )
+    return False, "stale_build"
+
+
 def _verify_fault_route(
     fault_code: str,
     route: str | None = None,
+    expected_build_sha: str = "",
 ) -> tuple[bool, str, float | None]:
     """Probe the fault route itself to confirm the fix is actually live."""
     target_route = (route or _default_route_for_fault_code(fault_code) or "").strip()
     if not target_route:
         return False, "missing_route", None
 
-    url = f"{_fault_verification_base_url()}{target_route}"
+    base_url = _fault_verification_base_url()
+    url = f"{base_url}{target_route}"
     timeout = float(os.getenv("FAULT_VERIFY_TIMEOUT_SECONDS", "20"))
     started_at = datetime.now()
+
+    if expected_build_sha:
+        build_ok, build_status = _build_sha_is_live(
+            base_url,
+            expected_build_sha,
+            timeout,
+        )
+        if not build_ok:
+            return False, build_status, None
 
     try:
         response = http_requests.post(
@@ -1487,6 +1537,7 @@ def pipeline_callback():
             verified_ok, health_status, latency_after = _verify_fault_route(
                 fault_code,
                 _default_route_for_fault_code(fault_code),
+                data.get("commit_sha", ""),
             )
             if not verified_ok:
                 _clear_fault_cooldowns([fault_code])

@@ -1,7 +1,7 @@
 """This file keeps tests for the developer part of the project so new changes stay safe."""
 
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from flask import url_for
 
@@ -10,6 +10,7 @@ from hello.developer.views import (
     _collect_resettable_fault_codes,
     _filter_incidents_after_demo_reset,
     _merge_incidents,
+    _verify_fault_route,
     build_dashboard_aggregates,
     build_incident_trend,
     get_mock_incidents,
@@ -113,6 +114,32 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         merged = _merge_incidents([live_incident], [cloudwatch_incident])
 
         assert [incident["id"] for incident in merged] == ["LIVE-0001", "CW-0001"]
+
+    @patch("hello.developer.views.http_requests.post")
+    @patch("hello.developer.views.http_requests.get")
+    def test_verify_fault_route_requires_latest_build_sha(
+        self,
+        mock_get,
+        mock_post,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("FAULT_VERIFY_BASE_URL", "https://cream.example")
+
+        build_response = Mock()
+        build_response.raise_for_status.return_value = None
+        build_response.json.return_value = {"build_sha": "old-build"}
+        mock_get.return_value = build_response
+
+        ok, status, latency = _verify_fault_route(
+            "FAULT_SQL_INJECTION_TEST",
+            "/test-fault/run",
+            expected_build_sha="new-build",
+        )
+
+        assert ok is False
+        assert status == "stale_build"
+        assert latency is None
+        mock_post.assert_not_called()
 
     def test_build_incident_trend_aggregates_last_seven_days(self):
         now = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
@@ -300,6 +327,7 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         mock_verify_fault_route.assert_called_once_with(
             "FAULT_DB_TIMEOUT",
             "/test-fault/db-timeout",
+            "",
         )
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0002"
         assert mock_update_live_incident.call_args.args[1]["status"] == "resolved"
@@ -345,6 +373,7 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         mock_verify_fault_route.assert_called_once_with(
             "FAULT_SQL_INJECTION_TEST",
             "/test-fault/run",
+            "",
         )
 
     @patch("hello.developer.views._clear_fault_cooldowns")

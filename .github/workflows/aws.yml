@@ -76,6 +76,7 @@ jobs:
         environment-variables: |
           SECRET_KEY=${{ secrets.SECRET_KEY }}
           BUILD_SHA=${{ github.sha }}
+          FAULT_VERIFY_BASE_URL=${{ secrets.DASHBOARD_URL }}
 
     - name: Ensure service is scaled up
       run: |
@@ -89,7 +90,34 @@ jobs:
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
-        wait-for-minutes: 8
+        wait-for-minutes: 7
+
+    - name: Wait for newest ECS build to serve traffic
+      env:
+        DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+        EXPECTED_BUILD_SHA: ${{ github.sha }}
+      run: |
+        if [ -z "$DASHBOARD_URL" ]; then
+          echo "DASHBOARD_URL secret is required to verify the latest ECS build."
+          exit 1
+        fi
+
+        deadline=$((SECONDS + 60))
+        while [ $SECONDS -lt $deadline ]; do
+          payload=$(curl -fsS "$DASHBOARD_URL/up/build" || true)
+          live_sha=$(printf '%s' "$payload" | jq -r '.build_sha // empty' 2>/dev/null || true)
+
+          if [ "$live_sha" = "$EXPECTED_BUILD_SHA" ]; then
+            echo "Latest ECS build is live: $live_sha"
+            exit 0
+          fi
+
+          echo "Waiting for newest ECS build. Expected $EXPECTED_BUILD_SHA, got ${live_sha:-<none>}."
+          sleep 10
+        done
+
+        echo "Newest ECS build did not become live within the 8 minute rollout budget."
+        exit 1
 
     # Notify dashboard after the new task is running.
     - name: Notify dashboard - deploy success
