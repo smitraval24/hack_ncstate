@@ -229,7 +229,10 @@ class TestDeveloperIncidentViews(ViewTestMixin):
 
         assert response.status_code == 200
         assert b"Root-cause analysis is still pending for this incident." in response.data
-        assert b"Not available for this incident." in response.data
+        assert (
+            b"A human-readable remediation summary was not captured for this incident."
+            in response.data
+        )
 
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views.create_live_incident")

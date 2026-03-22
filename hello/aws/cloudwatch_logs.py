@@ -32,6 +32,16 @@ class CloudWatchLogEvent:
 _CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 
 
+def _is_access_denied_error(error: ClientError) -> bool:
+    """Return whether a boto3 ClientError represents an access denial."""
+    err = error.response.get("Error", {}) if hasattr(error, "response") else {}
+    return (err.get("Code") or "").lower() in {
+        "accessdenied",
+        "accessdeniedexception",
+        "unauthorizedoperation",
+    }
+
+
 # This function handles the cache get work for this file.
 def _cache_get(key: tuple[Any, ...]) -> Any | None:
     now = time.time()
@@ -246,6 +256,11 @@ def fetch_recent_events(
                         )
                     )
             except ClientError as e:
+                # FilterLogEvents is the primary query path for the dashboard.
+                # If the optional stream-by-stream fallback is denied, keep the
+                # page usable and return the events we already collected.
+                if _is_access_denied_error(e):
+                    continue
                 err = e.response.get("Error", {}) if hasattr(e, "response") else {}
                 code = err.get("Code") or "ClientError"
                 msg = err.get("Message") or str(e)
