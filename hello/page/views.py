@@ -12,7 +12,6 @@ import requests
 from flask import Blueprint, render_template, current_app, abort
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, TimeoutError
-from sqlalchemy.pool import QueuePool
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
@@ -121,114 +120,67 @@ def _sanitize_error_message(error: Exception) -> str:
     return error_msg.strip()
 
 
-def _get_connection_pool_stats():
-    """Get current connection pool statistics for monitoring."""
-    pool = db.engine.pool
-    stats = {
-        "pool_size": pool.size(),
-        "checked_out": pool.checkedout(),
-        "overflow": pool.overflow(),
-        "checked_in": pool.checkedin(),
-    }
-    return stats
-
-
-def _safe_database_operation(operation_func, timeout_seconds=5, max_retries=2):
+def _safe_database_operation(operation_func, timeout_seconds=2):
     """
-    Execute a database operation with proper timeout, connection handling, and retry logic.
+    Execute a database operation with proper timeout and connection handling.
     Returns (success, result, error_message, latency)
     """
     start_time = time.time()
     connection = None
     transaction = None
-    last_error = None
 
-    for attempt in range(max_retries + 1):
-        try:
-            # Log pool stats before operation for debugging
-            pool_stats = _get_connection_pool_stats()
-            current_app.logger.debug(f"DB pool stats before operation (attempt {attempt + 1}): {pool_stats}")
+    try:
+        # Get a fresh connection from the pool
+        connection = db.engine.connect()
 
-            # Get a fresh connection from the pool with timeout
-            connection = db.engine.connect()
+        # Start a transaction with timeout
+        transaction = connection.begin()
 
-            # Start a transaction with timeout
-            transaction = connection.begin()
+        # Set connection-level timeout
+        connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}ms'"))
 
-            # Set connection-level timeouts for better control
-            connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}ms'"))
-            connection.execute(text(f"SET LOCAL lock_timeout = '{(timeout_seconds // 2) * 1000}ms'"))
+        # Execute the operation
+        result = operation_func(connection)
 
-            # Execute the operation
-            result = operation_func(connection)
+        # Commit transaction
+        transaction.commit()
 
-            # Commit transaction
-            transaction.commit()
+        latency = time.time() - start_time
+        return True, result, None, latency
 
-            latency = time.time() - start_time
-            current_app.logger.info(f"DB operation succeeded on attempt {attempt + 1}, latency: {latency:.3f}s")
-            return True, result, None, latency
+    except (OperationalError, TimeoutError) as e:
+        latency = time.time() - start_time
+        error_msg = str(e).lower()
 
-        except (OperationalError, TimeoutError) as e:
-            last_error = e
-            latency = time.time() - start_time
-            error_msg = str(e).lower()
+        if transaction:
+            try:
+                transaction.rollback()
+            except Exception:
+                pass
 
-            if transaction:
-                try:
-                    transaction.rollback()
-                except Exception:
-                    pass
-
-            current_app.logger.warning(f"DB operation failed on attempt {attempt + 1}/{max_retries + 1}: {error_msg[:100]}")
-
-            if "timeout" in error_msg or "canceling statement" in error_msg:
-                error_reason = "db_timeout_or_pool_exhaustion"
-            elif "connection" in error_msg or "server closed" in error_msg:
-                error_reason = "db_connection_error"
-            else:
-                error_reason = "db_operational_error"
-
-            # For timeout/connection errors, retry with exponential backoff
-            if attempt < max_retries and ("timeout" in error_msg or "connection" in error_msg):
-                backoff_time = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
-                current_app.logger.info(f"Retrying DB operation in {backoff_time}s...")
-                time.sleep(backoff_time)
-                continue
-            else:
-                return False, None, error_reason, latency
-
-        except Exception as e:
-            last_error = e
-            latency = time.time() - start_time
-
-            if transaction:
-                try:
-                    transaction.rollback()
-                except Exception:
-                    pass
-
-            current_app.logger.exception(f"Unexpected DB error on attempt {attempt + 1}: {e}")
-            return False, None, f"db_unexpected_error: {_sanitize_error_message(e)}", latency
-
-        finally:
-            # Ensure connection is properly returned to pool
-            if connection:
-                try:
-                    connection.close()
-                    current_app.logger.debug("DB connection returned to pool")
-                except Exception as close_error:
-                    current_app.logger.warning(f"Failed to close database connection: {close_error}")
-
-    # If we've exhausted all retries
-    latency = time.time() - start_time
-    error_reason = "db_max_retries_exceeded"
-    if last_error:
-        error_msg = str(last_error).lower()
         if "timeout" in error_msg or "canceling statement" in error_msg:
-            error_reason = "db_timeout_or_pool_exhaustion"
-    
-    return False, None, error_reason, latency
+            return False, None, "db_timeout_or_pool_exhaustion", latency
+        else:
+            return False, None, "db_connection_error", latency
+
+    except Exception as e:
+        latency = time.time() - start_time
+
+        if transaction:
+            try:
+                transaction.rollback()
+            except Exception:
+                pass
+
+        return False, None, f"db_unexpected_error: {_sanitize_error_message(e)}", latency
+
+    finally:
+        # Ensure connection is properly returned to pool
+        if connection:
+            try:
+                connection.close()
+            except Exception:
+                current_app.logger.warning("Failed to close database connection")
 
 
 def _make_external_api_call_with_resilience(url: str, timeout: float = 5.0, max_retries: int = 2):
@@ -316,39 +268,17 @@ def test_fault_run():
         return "", 404
 
     try:
-        # SECURITY FIX: Use parameterized query to prevent SQL injection
-        # This query safely tests database connectivity without vulnerability
-        query = text("SELECT :test_value as test_value, :test_message as test_message")
-        query_result = db.session.execute(
-            query,
-            {"test_value": 1, "test_message": "SQL injection test completed safely"}
-        )
-        test_row = query_result.fetchone()
-        db.session.commit()
-
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "message": "SQL injection test completed successfully - no vulnerabilities detected",
-            "test_result": {
-                "test_value": test_row[0] if test_row else None,
-                "test_message": test_row[1] if test_row else None
-            }
-        }
-        _resolve_live_incidents(error_code, "/test-fault/run")
-
+        # INTENTIONAL: malformed SQL — must always fail
+        db.session.execute(text("SELECT FROM"))
     except Exception as e:
-        db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-
-        # SECURITY FIX: Enhanced error message sanitization
-        sanitized_error = _sanitize_error_message(e)
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=sql_test_execution_error error=({type(e).__name__}) {sanitized_error}"
+            f"reason=invalid_sql_executed"
         )
-        _log_fault_event(msg)
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
         try:
             create_live_incident(
@@ -356,8 +286,8 @@ def test_fault_run():
                 route="/test-fault/run",
                 reason="invalid_sql_executed",
             )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
+        except Exception:
+            pass
 
     return render_template(
         "page/test_fault.html",
@@ -377,76 +307,96 @@ def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
 
+    start = time.time()
+
     try:
-        # RESILIENCE FIX: Use improved external API call with proper timeout and retry logic
-        # This replaces the unrealistic 0.01s timeout with a reasonable 3.0s timeout
-        # and adds retry logic to handle transient connection issues
-        success, api_data, error_type, latency = _make_external_api_call_with_resilience(
-            url="http://mock_api:5001/data",
-            timeout=3.0,  # Reasonable timeout for connection establishment
-            max_retries=2  # Allow 2 retries for transient issues
-        )
-
+        # INTENTIONAL: 3s timeout against mock API that has 60% chance of 2-8s delay
+        # and 30% chance of HTTP 500 — fails ~70% of the time
+        r = requests.get("http://mock_api:5001/data", timeout=3)
+        latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
-
-        if success:
-            result = {
-                "status": "ok",
-                "error_code": None,
-                "data": api_data,
-                "latency": f"{latency:.2f}s",
-            }
-            _resolve_live_incidents(error_code, "/test-fault/external-api", latency)
-        else:
-            result = {
-                "status": "error",
-                "error_code": error_code,
-                "detail": error_type,
-                "latency": f"{latency:.2f}s",
-            }
-
-            msg = (
-                f"{error_code} route=/test-fault/external-api "
-                f"reason={error_type} latency={latency:.2f}"
-            )
-            _log_fault_event(msg)
-
-            try:
-                create_live_incident(
-                    error_code=error_code,
-                    route="/test-fault/external-api",
-                    reason=error_type,
-                    latency=latency,
-                )
-            except Exception as incident_error:
-                current_app.logger.exception(f"Failed to create live incident: {incident_error}")
-
-    except Exception as e:
-        # Fallback error handling for unexpected issues
-        latency = 0.0
+        r.raise_for_status()
         result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": "unexpected_error",
+            "status": "ok",
+            "error_code": None,
+            "data": r.json(),
             "latency": f"{latency:.2f}s",
         }
 
-        sanitized_error = _sanitize_error_message(e)
+    except requests.exceptions.Timeout:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "timeout",
+            "latency": f"{latency:.2f}s",
+        }
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason=unexpected_error error=({type(e).__name__}) {sanitized_error}"
+            f"reason=external_timeout latency={latency:.2f}"
         )
-        _log_fault_event(msg)
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/external-api",
-                reason="unexpected_error",
+                reason="external_timeout",
                 latency=latency,
             )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
+        except Exception:
+            pass
+
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=upstream_failure latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="upstream_failure",
+                latency=latency,
+            )
+        except Exception:
+            pass
+
+    except requests.exceptions.ConnectionError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "connection_refused",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=connection_error latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="connection_error",
+                latency=latency,
+            )
+        except Exception:
+            pass
 
     return render_template(
         "page/test_fault.html",
@@ -466,74 +416,43 @@ def test_fault_db_timeout():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
 
-    def db_timeout_operation(connection):
-        """Database operation that tests timeout handling with a realistic query."""
-        # FAULT FIX: Replace the intentional 5-second sleep with a realistic database operation
-        # This simulates a complex query that might timeout under load but is still reasonable
-        # Use a query that does actual work but completes within reasonable time
-        connection.execute(text("""
-            WITH RECURSIVE fibonacci(n, a, b) AS (
-                SELECT 1, 0, 1
-                UNION ALL
-                SELECT n+1, b, a+b FROM fibonacci WHERE n < :iterations
-            )
-            SELECT COUNT(*), MAX(b) as max_fib 
-            FROM fibonacci
-        """), {"iterations": 25})  # Fibonacci to 25 iterations - reasonable computational load
-        
-        # Also test a simple health check query
-        health_result = connection.execute(text("SELECT 1 as health_check, NOW() as timestamp"))
-        health_row = health_result.fetchone()
-        
-        return {
-            "message": "Database timeout test completed successfully",
-            "health_check": health_row[0] if health_row else None,
-            "timestamp": str(health_row[1]) if health_row else None
-        }
+    start = time.time()
 
-    # FAULT FIX: Use improved database operation wrapper with proper timeout handling and retries
-    # Increased timeout to 5 seconds and added retry logic for better resilience
-    success, operation_result, error_reason, latency = _safe_database_operation(
-        db_timeout_operation,
-        timeout_seconds=5,  # More reasonable timeout for complex queries
-        max_retries=2       # Allow retries for transient timeout/connection issues
-    )
-
-    if success:
+    try:
+        # INTENTIONAL: pg_sleep(5) with no app-level statement_timeout
+        # Relies on DB-level or pool-level timeout to trigger the fault
+        # Always causes 5+ second delay, often times out
+        db.session.execute(text("SELECT pg_sleep(5);"))
+        latency = time.time() - start
         result = {
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "operation_result": operation_result,
-            "pool_stats": _get_connection_pool_stats(),
         }
-        _resolve_live_incidents(error_code, "/test-fault/db-timeout", latency)
-        
-        current_app.logger.info(f"DB timeout test succeeded: latency={latency:.3f}s")
-    else:
+    except Exception as e:
+        latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": f"Database operation failed: {error_reason}",
+            "detail": str(e)[:200],
             "latency": f"{latency:.2f}s",
-            "pool_stats": _get_connection_pool_stats(),
         }
-
         msg = (
             f"{error_code} route=/test-fault/db-timeout "
-            f"reason={error_reason} latency={latency:.2f}"
+            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
         )
-        _log_fault_event(msg)
+        print(msg, file=sys.stderr)
+        current_app.logger.error(f"db_error={e!s}")
 
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/db-timeout",
-                reason=error_reason,
+                reason="db_timeout_or_pool_exhaustion",
                 latency=latency,
             )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
+        except Exception:
+            pass
 
     return render_template(
         "page/test_fault.html",
