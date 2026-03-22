@@ -53,6 +53,7 @@ def test_fault_external_api():
                 "detail": "wrong_data",
                 "latency": f"{latency:.2f}s",
                 "data": payload,
+                "http_code": 504,
             }
             msg = (
                 f"{error_code} route=/test-fault/external-api "
@@ -73,6 +74,7 @@ def test_fault_external_api():
             "error_code": None,
             "data": payload,
             "latency": f"{latency:.2f}s",
+            "detail": "External API returned correct data — fault has been healed.",
         }
 
     except requests.exceptions.Timeout:
@@ -82,6 +84,7 @@ def test_fault_external_api():
             "error_code": error_code,
             "detail": "timeout",
             "latency": f"{latency:.2f}s",
+            "http_code": 504,
         }
         msg = (
             f"{error_code} route=/test-fault/external-api "
@@ -102,6 +105,7 @@ def test_fault_external_api():
             "error_code": error_code,
             "detail": "upstream_500",
             "latency": f"{latency:.2f}s",
+            "http_code": 504,
         }
         msg = (
             f"{error_code} route=/test-fault/external-api "
@@ -122,6 +126,7 @@ def test_fault_external_api():
             "error_code": error_code,
             "detail": "connection_refused",
             "latency": f"{latency:.2f}s",
+            "http_code": 504,
         }
         msg = (
             f"{error_code} route=/test-fault/external-api "

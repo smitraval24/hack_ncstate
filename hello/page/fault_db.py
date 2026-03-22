@@ -41,6 +41,7 @@ def test_fault_db_timeout():
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
+            "detail": "DB query completed without timeout — fault has been healed.",
         }
     except Exception as e:
         db.session.rollback()

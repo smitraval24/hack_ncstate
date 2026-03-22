@@ -275,10 +275,33 @@
 
     .result-panel--success {
       border-color: rgba(17, 210, 189, 0.26);
+      background: linear-gradient(180deg, rgba(11, 36, 32, 0.96), rgba(8, 14, 27, 0.92));
     }
 
     .result-panel--danger {
       border-color: rgba(255, 106, 136, 0.28);
+    }
+
+    .result-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+    }
+
+    .result-badge--ok {
+      background: rgba(17, 210, 189, 0.16);
+      color: #5ef5db;
+    }
+
+    .result-badge--error {
+      background: rgba(255, 94, 122, 0.16);
+      color: #ff8ea3;
     }
 
     .result-title {
@@ -565,9 +588,14 @@
             {% elif result.status == 'disabled' %}
               Fault injection disabled
             {% else %}
-              No fault detected
+              Fault healed — no error detected
             {% endif %}
           </div>
+          {% if result.status == 'ok' %}
+            <div class="result-badge result-badge--ok">HTTP 200 — OK</div>
+          {% else %}
+            <div class="result-badge result-badge--error">HTTP {{ result.http_code or '500' }} — ERROR</div>
+          {% endif %}
 
           <div class="result-grid">
             <div class="result-item">
@@ -679,14 +707,66 @@
       button.textContent = isBusy ? 'Running...' : idleLabel;
     }
 
-    function showInlineFaultResult(markup) {
+    function showInlineFaultResult(markup, httpStatus) {
       const parser = new DOMParser();
       const doc = parser.parseFromString(markup, 'text/html');
       const incomingSlot = doc.getElementById('fault-result-slot');
 
-      if (!incomingSlot || !faultResultSlot) return;
-
-      faultResultSlot.innerHTML = incomingSlot.innerHTML;
+      if (incomingSlot && incomingSlot.querySelector('.result-panel')) {
+        faultResultSlot.innerHTML = incomingSlot.innerHTML;
+      } else if (httpStatus && httpStatus >= 200 && httpStatus < 300) {
+        faultResultSlot.innerHTML = `
+          <section class="result-panel result-panel--success is-visible" data-reveal style="--reveal-delay: 60ms;">
+            <div class="result-title">Fault healed &mdash; no error detected</div>
+            <div class="result-badge result-badge--ok">HTTP ${httpStatus} &mdash; OK</div>
+            <div class="result-grid">
+              <div class="result-item">
+                <div class="result-item__label">Status</div>
+                <div class="result-item__value">ok</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">Error Code</div>
+                <div class="result-item__value">None</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">Detail</div>
+                <div class="result-item__value">The self-healing loop has fixed this fault. The route executed successfully.</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">HTTP Status</div>
+                <div class="result-item__value">${httpStatus}</div>
+              </div>
+            </div>
+          </section>
+        `;
+      } else if (httpStatus && httpStatus >= 400) {
+        faultResultSlot.innerHTML = `
+          <section class="result-panel result-panel--danger is-visible" data-reveal style="--reveal-delay: 60ms;">
+            <div class="result-title">Fault triggered</div>
+            <div class="result-badge result-badge--error">HTTP ${httpStatus} &mdash; ERROR</div>
+            <div class="result-grid">
+              <div class="result-item">
+                <div class="result-item__label">Status</div>
+                <div class="result-item__value">error</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">Error Code</div>
+                <div class="result-item__value">Unknown</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">Detail</div>
+                <div class="result-item__value">The fault is still active. Waiting for the self-healing loop to fix it.</div>
+              </div>
+              <div class="result-item">
+                <div class="result-item__label">HTTP Status</div>
+                <div class="result-item__value">${httpStatus}</div>
+              </div>
+            </div>
+          </section>
+        `;
+      } else {
+        return;
+      }
 
       const panel = faultResultSlot.querySelector('.result-panel');
       if (panel) {
@@ -740,7 +820,7 @@
             },
           });
           const html = await response.text();
-          showInlineFaultResult(html);
+          showInlineFaultResult(html, response.status);
           setFaultStatus(form, '');
         } catch (error) {
           showInlineFaultError(error.message || 'Unknown client error');
