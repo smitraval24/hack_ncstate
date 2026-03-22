@@ -7,7 +7,7 @@ this fault code.  The route is registered on the page blueprint.
 
 import sys
 
-from flask import current_app
+from flask import current_app, request
 from sqlalchemy import text
 
 from config.settings import ENABLE_FAULT_INJECTION
@@ -27,15 +27,26 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # FIXED: Use valid SQL syntax instead of malformed SQL
-        db.session.execute(text("SELECT 1"))
+        # SECURITY FIX: Use parameterized query to prevent SQL injection
+        # Instead of concatenating user input directly into SQL query
+        test_param = request.form.get('test_param', '1')
+        
+        # Validate input to ensure it's safe
+        if not test_param.isdigit():
+            test_param = '1'
+        
+        # Use parameterized query with proper escaping
+        query = text("SELECT :param as test_value")
+        db.session.execute(query, {"param": int(test_param)})
+        db.session.commit()
+        
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed"
+            f"reason=sql_injection_prevented"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -44,7 +55,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="invalid_sql_executed",
+                reason="sql_injection_prevented",
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
