@@ -1,6 +1,5 @@
 """This file handles the views logic for the developer part of the project."""
 
-import ast
 import base64
 import json
 import logging
@@ -36,6 +35,13 @@ FAULT_FUNCTION_MAP = {
     "FAULT_SQL_INJECTION_TEST": "test_fault_run",
     "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
     "FAULT_DB_TIMEOUT": "test_fault_db_timeout",
+}
+
+# Maps fault codes to their individual file paths (used for split-file reset)
+FAULT_FILE_PATH_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "hello/page/fault_sql.py",
+    "FAULT_EXTERNAL_API_LATENCY": "hello/page/fault_api.py",
+    "FAULT_DB_TIMEOUT": "hello/page/fault_db.py",
 }
 
 FAULT_ROUTE_MAP = {
@@ -765,75 +771,23 @@ def _collect_resettable_fault_codes(incidents: list[dict]) -> list[str]:
     return sorted(resettable)
 
 
-def _function_source_block(source: str, function_name: str) -> tuple[int, int, str]:
-    """Return the byte range and source block for a top-level function."""
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
 
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name != function_name:
-            continue
-
-        start_line = min(
-            (decorator.lineno for decorator in node.decorator_list),
-            default=node.lineno,
-        )
-        end_line = node.end_lineno
-        if end_line is None:
-            raise ValueError(f"Could not determine end of function {function_name}")
-
-        start_idx = sum(len(line) for line in lines[: start_line - 1])
-        end_idx = sum(len(line) for line in lines[:end_line])
-        block = "".join(lines[start_line - 1 : end_line])
-        return start_idx, end_idx, block
-
-    raise ValueError(f"Function {function_name} not found")
-
-
-def _restore_faulty_functions(current_source: str, fault_codes: list[str]) -> str:
-    """Restore only the selected fault handlers back to their faulty template."""
-    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
-
-    updated_source = current_source
-    replacements = []
-
-    for fault_code in sorted(set(fault_codes)):
-        function_name = FAULT_FUNCTION_MAP.get(fault_code)
-        if not function_name:
-            continue
-
-        start_idx, end_idx, _ = _function_source_block(updated_source, function_name)
-        _, _, faulty_block = _function_source_block(FAULTY_VIEWS_CONTENT, function_name)
-        replacements.append((start_idx, end_idx, faulty_block))
-
-    for start_idx, end_idx, faulty_block in sorted(replacements, reverse=True):
-        updated_source = (
-            updated_source[:start_idx] + faulty_block + updated_source[end_idx:]
-        )
-
-    return updated_source
-
-
-def _fault_codes_differing_from_template(current_source: str) -> list[str]:
-    """Return fault codes whose current function body no longer matches the faulty template."""
-    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
+def _fault_codes_differing_from_template() -> list[str]:
+    """Return fault codes whose current file content no longer matches the faulty template."""
+    from hello.page._faulty_views_template import FAULT_FILE_MAP
 
     differing_fault_codes = []
 
-    for fault_code, function_name in FAULT_FUNCTION_MAP.items():
+    for fault_code, info in FAULT_FILE_MAP.items():
+        file_path = info["file_path"]
+        faulty_content = info["content"]
         try:
-            _, _, current_block = _function_source_block(current_source, function_name)
-            _, _, faulty_block = _function_source_block(
-                FAULTY_VIEWS_CONTENT,
-                function_name,
-            )
-        except ValueError:
+            current_content, _ = _read_github_file_content(file_path)
+        except Exception:
             differing_fault_codes.append(fault_code)
             continue
 
-        if current_block != faulty_block:
+        if current_content.strip() != faulty_content.strip():
             differing_fault_codes.append(fault_code)
 
     return sorted(differing_fault_codes)
@@ -1261,7 +1215,7 @@ def _arm_self_healing():
 
 
 def _reset_faulty_code(fault_codes: list[str]) -> dict:
-    """Push only the selected faulty handlers back to GitHub."""
+    """Push the selected faulty files back to GitHub (one file per fault code)."""
     from config.settings import (
         GITHUB_LAMBDA_NAME,
         GITHUB_BRANCH,
@@ -1269,126 +1223,125 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
         GITHUB_REPO,
         GITHUB_TOKEN,
     )
+    from hello.page._faulty_views_template import FAULT_FILE_MAP
 
-    file_path = "hello/page/views.py"
     resettable_fault_codes = [
-        fault_code for fault_code in fault_codes if fault_code in FAULT_FUNCTION_MAP
+        fc for fc in fault_codes if fc in FAULT_FILE_MAP
     ]
 
     try:
-        current_content, read_method = _read_github_file_content(file_path)
-        drifted_fault_codes = _fault_codes_differing_from_template(current_content)
+        drifted_fault_codes = _fault_codes_differing_from_template()
         resettable_fault_codes = sorted(
             set(resettable_fault_codes) | set(drifted_fault_codes)
         )
         if not resettable_fault_codes:
-            logger.info("Reset skipped: all fault handlers already match the faulty template")
+            logger.info("Reset skipped: all fault files already match the faulty template")
             return {
                 "method": "none",
                 "success": True,
                 "skipped": True,
                 "fault_codes": [],
-                "message": "Fault handlers already match the faulty template.",
+                "message": "Fault files already match the faulty template.",
             }
-        reset_content = _restore_faulty_functions(
-            current_content,
-            resettable_fault_codes,
-        )
     except Exception as exc:
-        logger.warning("Could not prepare selective fault reset: %s", exc)
-        return {
-            "method": "prepare",
+        logger.warning("Could not check fault file drift: %s", exc)
+
+    results = {}
+    overall_success = True
+
+    for fault_code in resettable_fault_codes:
+        info = FAULT_FILE_MAP[fault_code]
+        file_path = info["file_path"]
+        reset_content = info["content"]
+        commit_message = f"[RESET] Restore faulty handler for {fault_code}"
+
+        # Method 1: Invoke GithubTool Lambda
+        if GITHUB_LAMBDA_NAME:
+            try:
+                body = _invoke_github_lambda(
+                    "push_github_fix",
+                    [
+                        {"name": "file_path", "value": file_path},
+                        {"name": "file_content", "value": reset_content},
+                        {"name": "commit_message", "value": commit_message},
+                    ],
+                )
+                logger.info("Reset %s via Lambda: %s", fault_code, body)
+                results[fault_code] = {
+                    "method": "lambda",
+                    "success": body.get("ok", False),
+                    "file_path": file_path,
+                }
+                if not body.get("ok", False):
+                    overall_success = False
+                continue
+            except Exception as e:
+                logger.warning("Lambda reset failed for %s, trying GitHub API: %s", fault_code, e)
+
+        # Method 2: GitHub API directly
+        if GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO:
+            try:
+                api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
+                headers = {
+                    "Authorization": f"Bearer {GITHUB_TOKEN}",
+                    "Accept": "application/vnd.github+json",
+                    "Content-Type": "application/json",
+                }
+
+                get_resp = http_requests.get(
+                    f"{api_url}?ref={GITHUB_BRANCH}",
+                    headers=headers,
+                    timeout=10,
+                )
+                get_resp.raise_for_status()
+                file_sha = get_resp.json()["sha"]
+
+                content_b64 = base64.b64encode(reset_content.encode("utf-8")).decode("utf-8")
+                put_resp = http_requests.put(
+                    api_url,
+                    headers=headers,
+                    json={
+                        "message": commit_message,
+                        "content": content_b64,
+                        "sha": file_sha,
+                        "branch": GITHUB_BRANCH,
+                    },
+                    timeout=15,
+                )
+                put_resp.raise_for_status()
+                commit_sha = put_resp.json().get("commit", {}).get("sha", "")
+                logger.info("Reset %s via GitHub API: %s", fault_code, commit_sha)
+                results[fault_code] = {
+                    "method": "github_api",
+                    "success": True,
+                    "file_path": file_path,
+                    "commit_sha": commit_sha,
+                }
+                continue
+            except Exception as e:
+                logger.warning("GitHub API reset failed for %s: %s", fault_code, e)
+                results[fault_code] = {
+                    "method": "github_api",
+                    "success": False,
+                    "file_path": file_path,
+                    "error": str(e),
+                }
+                overall_success = False
+                continue
+
+        results[fault_code] = {
+            "method": "none",
             "success": False,
-            "fault_codes": resettable_fault_codes,
-            "error": str(exc),
+            "file_path": file_path,
+            "error": "No GitHub credentials configured",
         }
+        overall_success = False
 
-    commit_message = (
-        "[RESET] Restore faulty demo handlers for "
-        + ", ".join(resettable_fault_codes)
-    )
-
-    # Method 1: Invoke GithubTool Lambda
-    if GITHUB_LAMBDA_NAME:
-        try:
-            body = _invoke_github_lambda(
-                "push_github_fix",
-                [
-                    {"name": "file_path", "value": file_path},
-                    {"name": "file_content", "value": reset_content},
-                    {"name": "commit_message", "value": commit_message},
-                ],
-            )
-            logger.info("Reset faulty code via Lambda: %s", body)
-            return {
-                "method": "lambda",
-                "success": body.get("ok", False),
-                "fault_codes": resettable_fault_codes,
-                "read_method": read_method,
-                "detail": body,
-            }
-        except Exception as e:
-            logger.warning("Lambda reset failed, trying GitHub API: %s", e)
-
-    # Method 2: GitHub API directly
-    if GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO:
-        try:
-            api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
-            headers = {
-                "Authorization": f"Bearer {GITHUB_TOKEN}",
-                "Accept": "application/vnd.github+json",
-                "Content-Type": "application/json",
-            }
-
-            # Get current file SHA
-            get_resp = http_requests.get(
-                f"{api_url}?ref={GITHUB_BRANCH}",
-                headers=headers,
-                timeout=10,
-            )
-            get_resp.raise_for_status()
-            file_sha = get_resp.json()["sha"]
-
-            # Push selectively restored content
-            content_b64 = base64.b64encode(reset_content.encode("utf-8")).decode("utf-8")
-            put_resp = http_requests.put(
-                api_url,
-                headers=headers,
-                json={
-                    "message": commit_message,
-                    "content": content_b64,
-                    "sha": file_sha,
-                    "branch": GITHUB_BRANCH,
-                },
-                timeout=15,
-            )
-            put_resp.raise_for_status()
-            commit_sha = put_resp.json().get("commit", {}).get("sha", "")
-            logger.info("Reset faulty code via GitHub API: %s", commit_sha)
-            return {
-                "method": "github_api",
-                "success": True,
-                "fault_codes": resettable_fault_codes,
-                "read_method": read_method,
-                "commit_sha": commit_sha,
-            }
-        except Exception as e:
-            logger.warning("GitHub API reset failed: %s", e)
-            return {
-                "method": "github_api",
-                "success": False,
-                "fault_codes": resettable_fault_codes,
-                "read_method": read_method,
-                "error": str(e),
-            }
-
-    logger.info("No GitHub credentials configured — skipped code reset")
     return {
-        "method": "none",
-        "success": False,
+        "method": "per_file",
+        "success": overall_success,
         "fault_codes": resettable_fault_codes,
-        "read_method": read_method,
-        "error": "No GITHUB_LAMBDA_NAME or GITHUB_TOKEN configured",
+        "per_file_results": results,
     }
 
 

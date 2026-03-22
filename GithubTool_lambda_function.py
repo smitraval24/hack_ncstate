@@ -7,10 +7,15 @@ import urllib.request
 import boto3
 
 GITHUB_API = "https://api.github.com"
-ALLOWED_FILE_PATHS = {"hello/page/views.py"}
+ALLOWED_FILE_PATHS = {
+    "hello/page/fault_sql.py",
+    "hello/page/fault_api.py",
+    "hello/page/fault_db.py",
+}
 FORBIDDEN_CONTEXT_FILE_PATHS = {
     "hello/page/_faulty_views_template.py",
     "hello/page/_fault_cores.py",
+    "hello/page/views.py",
 }
 
 
@@ -29,7 +34,7 @@ def validate_file_path(file_path: str) -> str:
         )
     if normalized not in ALLOWED_FILE_PATHS:
         raise ValueError(
-            f"Only {sorted(ALLOWED_FILE_PATHS)[0]} can be accessed by this tool"
+            f"Only {', '.join(sorted(ALLOWED_FILE_PATHS))} can be accessed by this tool"
         )
 
     return normalized

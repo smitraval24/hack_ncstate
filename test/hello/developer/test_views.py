@@ -8,15 +8,12 @@ from flask import url_for
 from lib.test import ViewTestMixin
 from hello.developer.views import (
     _collect_resettable_fault_codes,
-    _fault_codes_differing_from_template,
     _filter_incidents_after_demo_reset,
     _merge_incidents,
-    _restore_faulty_functions,
     build_dashboard_aggregates,
     build_incident_trend,
     get_mock_incidents,
 )
-from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
 
 
 # This function handles the make incident work for this file.
@@ -45,41 +42,16 @@ def _make_incident(
 
 # This class keeps the test developer incident views data and behavior in one place.
 class TestDeveloperIncidentViews(ViewTestMixin):
-    def test_restore_faulty_functions_only_reverts_selected_fault_handlers(self):
-        current_source = (
-            FAULTY_VIEWS_CONTENT
-            .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
-            .replace(
-                'requests.get(f"{mock_api_base_url}/data", timeout=3)',
-                'requests.get(f"{mock_api_base_url}/data", timeout=10)',
-                1,
-            )
-        )
+    def test_fault_file_map_has_all_three_fault_codes(self):
+        from hello.page._faulty_views_template import FAULT_FILE_MAP
 
-        restored = _restore_faulty_functions(
-            current_source,
-            ["FAULT_SQL_INJECTION_TEST"],
-        )
-
-        assert 'db.session.execute(text("SELECT FROM"))' in restored
-        assert 'requests.get(f"{mock_api_base_url}/data", timeout=10)' in restored
-        assert restored.count('db.session.execute(text("SELECT FROM"))') == 1
-
-    def test_fault_codes_differing_from_template_detects_healed_handlers(self):
-        current_source = (
-            FAULTY_VIEWS_CONTENT
-            .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
-            .replace(
-                'db.session.execute(text("SET LOCAL statement_timeout = \'5500ms\';"))',
-                'db.session.execute(text("SET LOCAL statement_timeout = \'10s\';"))',
-                1,
-            )
-        )
-
-        assert _fault_codes_differing_from_template(current_source) == [
-            "FAULT_DB_TIMEOUT",
-            "FAULT_SQL_INJECTION_TEST",
-        ]
+        assert "FAULT_SQL_INJECTION_TEST" in FAULT_FILE_MAP
+        assert "FAULT_EXTERNAL_API_LATENCY" in FAULT_FILE_MAP
+        assert "FAULT_DB_TIMEOUT" in FAULT_FILE_MAP
+        for info in FAULT_FILE_MAP.values():
+            assert "file_path" in info
+            assert "content" in info
+            assert info["content"].strip()
 
     def test_collect_resettable_fault_codes_only_includes_auto_healed_resolved_faults(self):
         incidents = [

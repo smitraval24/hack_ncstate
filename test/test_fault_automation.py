@@ -101,7 +101,7 @@ def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
             "actionGroup": "GitHubActions",
             "function": "push_github_fix",
             "parameters": [
-                {"name": "file_path", "value": "hello/page/views.py"},
+                {"name": "file_path", "value": "hello/page/fault_sql.py"},
                 {"name": "file_content", "value": unchanged_content},
                 {"name": "commit_message", "value": "No-op fix"},
             ],
@@ -168,4 +168,5 @@ def test_push_github_fix_rejects_unexpected_file():
     )
 
     assert body["ok"] is False
-    assert "only hello/page/views.py" in body["error"].lower()
+    assert "only" in body["error"].lower()
+    assert "fault_" in body["error"].lower()

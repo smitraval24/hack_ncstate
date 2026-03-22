@@ -21,7 +21,17 @@ FAULT_CODES = {
 FORBIDDEN_CONTEXT_FILES = (
     "hello/page/_faulty_views_template.py",
     "hello/page/_fault_cores.py",
+    "hello/page/fault_sql.py",
+    "hello/page/fault_api.py",
+    "hello/page/fault_db.py",
 )
+
+# Each fault code maps to its own isolated file so Claude can only see/edit one fault at a time
+FAULT_FILE_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "hello/page/fault_sql.py",
+    "FAULT_EXTERNAL_API_LATENCY": "hello/page/fault_api.py",
+    "FAULT_DB_TIMEOUT": "hello/page/fault_db.py",
+}
 
 # Skip processing if the demo is paused (set by the Reset endpoint).
 DEMO_PAUSE_PARAM = "/cream/demo-paused"
@@ -96,20 +106,26 @@ def backboard_message(thread_id: str, content: str) -> dict:
 
 # This function handles the invoke claude work for this file.
 def invoke_claude(incident, analysis):
+    # Each fault code has its own isolated file — Claude only sees that one file
+    target_file = FAULT_FILE_MAP.get(incident["fault_code"], "hello/page/fault_sql.py")
+
+    # Remove the target file from forbidden list so Claude can read/write it
+    forbidden_for_this_fault = tuple(f for f in FORBIDDEN_CONTEXT_FILES if f != target_file)
+
     tools = [
         {
             "name": "read_github_file",
             "description": (
-                "Read the current content of hello/page/views.py from the GitHub "
-                "repository before making changes. Do not read template, sample, "
-                "or fault reference files."
+                f"Read the current content of {target_file} from the GitHub "
+                "repository before making changes. Do not read any other fault files, "
+                "template files, or fault reference files."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Must be exactly hello/page/views.py"
+                        "description": f"Must be exactly {target_file}"
                     }
                 },
                 "required": ["file_path"]
@@ -117,13 +133,13 @@ def invoke_claude(incident, analysis):
         },
         {
             "name": "push_github_fix",
-            "description": "Push a code fix directly to GitHub by updating a file in the repository.",
+            "description": f"Push a code fix directly to GitHub by updating {target_file}.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Path to the file to update e.g. hello/page/views.py"
+                        "description": f"Path to the file to update — must be {target_file}"
                     },
                     "file_content": {
                         "type": "string",
@@ -139,8 +155,7 @@ def invoke_claude(incident, analysis):
         }
     ]
 
-    # Map fault codes to their specific route function names so Claude
-    # knows exactly which function to fix and which to leave alone.
+    # Map fault codes to their specific route function names
     fault_function_map = {
         "FAULT_SQL_INJECTION_TEST": "test_fault_run",
         "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
@@ -176,7 +191,7 @@ def invoke_claude(incident, analysis):
     messages = [
         {
             "role": "user",
-            "content": f"""You are a remediation agent. You MUST fix ONLY the specific faulty endpoint described below. Do NOT modify any other function in the file.
+            "content": f"""You are a remediation agent. Fix the bug in the file below.
 
 INCIDENT:
 {json.dumps(incident, indent=2)}
@@ -184,25 +199,24 @@ INCIDENT:
 BACKBOARD_ANALYSIS:
 {json.dumps(analysis, indent=2)}
 
-TARGET FILE: hello/page/views.py
+TARGET FILE: {target_file}
 TARGET FUNCTION: {target_function}()
 FIX HINT: {fix_hint}
-FORBIDDEN CONTEXT FILES: {", ".join(FORBIDDEN_CONTEXT_FILES)}
+FORBIDDEN CONTEXT FILES: {", ".join(forbidden_for_this_fault)}
 
-CRITICAL RULES:
-1. ONLY modify the function `{target_function}()` and any helper you add for it.
-2. Do NOT touch, modify, or "improve" any other function in the file (home, _render_fault, test_fault, or any other test_fault_* function).
-3. Every line of code outside `{target_function}()` must remain EXACTLY as-is — same imports, same logic, same comments, same bugs. If another function has a bug, LEAVE IT. You are only fixing {incident['fault_code']}.
-4. Do NOT read, inspect, quote, summarize, or use any sample/template fault file as context, especially {", ".join(FORBIDDEN_CONTEXT_FILES)}.
-5. The ONLY file you may read from GitHub is `hello/page/views.py`.
+RULES:
+1. Read ONLY `{target_file}` from GitHub — this file contains exactly one fault handler.
+2. Fix the bug in `{target_function}()` so it succeeds instead of failing.
+3. Keep all imports and the function signature intact. You may add new imports if needed.
+4. Do NOT read, inspect, or reference any other fault file or template file.
+5. Call push_github_fix with the full corrected file content.
 6. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
 
 Steps:
-1. Call read_github_file to read hello/page/views.py
-2. Identify the bug in `{target_function}()` only
-3. Fix ONLY that function — copy everything else unchanged
-4. Call push_github_fix with the full file (commit message starts with [FAULT:{incident['fault_code']}])
-5. Report what you changed"""
+1. Call read_github_file to read {target_file}
+2. Identify and fix the bug in `{target_function}()`
+3. Call push_github_fix with the corrected file
+4. Report what you changed"""
         }
     ]
 

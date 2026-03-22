@@ -545,11 +545,11 @@
               <span>Statement timeout path</span>
               <span class="signal-card__tag signal-card__tag--db">DB</span>
             </div>
-            <div class="signal-card__body">Exercises a real database statement timeout after a visibly slow query window.</div>
+            <div class="signal-card__body">Exercises a real database statement timeout — pg_sleep(10) behind a 5.5s timeout, visibly hangs before PostgreSQL cancels it.</div>
             <div class="signal-card__line"></div>
             <div class="signal-card__meta">
               <span>Pressure source</span>
-              <span>pg_sleep(10)</span>
+              <span>pg_sleep(10) / 5500ms timeout</span>
             </div>
           </div>
         </div>
@@ -636,8 +636,8 @@
         <div class="fault-card__number">03</div>
         <h2 class="fault-card__title">Database Timeout Simulation</h2>
         <p class="fault-card__body">
-          Executes <code>SELECT pg_sleep(10)</code> behind a <code>5500ms</code> statement timeout
-          so the request visibly hangs for a bit over 5 seconds before PostgreSQL cancels it.
+          Executes <code>SELECT pg_sleep(10)</code> behind a <code>5500ms</code> statement timeout,
+          so the request visibly hangs for ~5.5 seconds before PostgreSQL cancels it.
         </p>
         <div class="fault-card__meta">
           <span>Route</span>
