@@ -4,13 +4,12 @@ import os
 import sys
 import time
 import logging
-import re
 from datetime import datetime
 from importlib.metadata import version
 from urllib.parse import urlparse, urljoin
 
 import requests
-from flask import Blueprint, render_template, current_app, abort, request
+from flask import Blueprint, render_template, current_app, abort
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -31,46 +30,6 @@ PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 def _log_fault_event(message: str) -> None:
     """Emit a single structured fault log line for CloudWatch subscribers."""
     current_app.logger.error(message)
-
-
-def _sanitize_error_message(error_msg: str) -> str:
-    """Sanitize error messages to prevent injection attacks."""
-    if not error_msg:
-        return "Unknown error"
-    
-    # Convert to string and limit length
-    sanitized = str(error_msg)[:100]
-    
-    # Remove all SQL-related characters and potential injection patterns
-    sanitized = re.sub(r'[\'\"`;\\<>&\n\r\t]', '', sanitized)
-    
-    # Remove SQL keywords (case insensitive)
-    sql_keywords = [
-        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER', 
-        'UNION', 'OR', 'AND', 'EXEC', 'EXECUTE', 'SCRIPT', 'IFRAME', 'OBJECT'
-    ]
-    
-    for keyword in sql_keywords:
-        sanitized = re.sub(re.escape(keyword), '', sanitized, flags=re.IGNORECASE)
-    
-    # Remove any remaining suspicious patterns
-    sanitized = re.sub(r'[^\w\s\-\.\,\(\)]', '', sanitized)
-    
-    # Limit to alphanumeric, spaces, and safe punctuation
-    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-    
-    return sanitized if sanitized else "Database error occurred"
-
-
-def _execute_safe_test_query():
-    """Execute a safe, parameterized test query to check database connectivity."""
-    # Use a parameterized query with a bound parameter instead of direct SQL
-    test_value = 1
-    result = db.session.execute(
-        text("SELECT :test_val AS test_column"), 
-        {"test_val": test_value}
-    )
-    return result.fetchone()
 
 
 def _resolve_live_incidents(error_code: str, route: str, latency: float | None = None) -> list[str]:
@@ -185,19 +144,15 @@ def test_fault_run():
         ), 200
 
     try:
-        # Use safe parameterized query instead of direct SQL execution
-        _execute_safe_test_query()
+        db.session.execute(text("SELECT 1 AS test_column"))
         _resolve_live_incidents(error_code, "/test-fault/run")
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-        
-        # Sanitize error message to prevent injection attacks
-        sanitized_error = _sanitize_error_message(str(e))
-        
+        error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed error={sanitized_error}"
+            f"reason=invalid_sql_executed error={error_msg}"
         )
         _log_fault_event(msg)
 
@@ -399,37 +354,68 @@ def test_fault_db_timeout():
     error_code = "FAULT_DB_TIMEOUT"
     result = {"status": "ok", "error_code": None}
 
+    # Check if fault injection is enabled before proceeding
+    if not ENABLE_FAULT_INJECTION:
+        result = {"status": "disabled", "error_code": None}
+        current_app.logger.info("DB timeout test skipped - fault injection disabled")
+        return render_template(
+            "page/test_fault.html",
+            flask_ver=version("flask"),
+            python_ver=PYTHON_VER,
+            debug=DEBUG,
+            enable_fault_injection=ENABLE_FAULT_INJECTION,
+            result=result,
+        ), 200
+
     start = time.time()
 
     try:
-        # Use parameterized queries for timeout configuration
-        db.session.execute(text("SET LOCAL statement_timeout = :timeout"), {"timeout": "1000ms"})
-        db.session.execute(text("SELECT pg_sleep(:sleep_duration)"), {"sleep_duration": 5})
+        # Configure timeout based on environment variable with safe defaults
+        timeout_ms = int(os.environ.get("DB_TIMEOUT_MS", "2000"))  # Default 2 seconds
+        sleep_duration = float(os.environ.get("DB_SLEEP_DURATION", "0.5"))  # Default 0.5 seconds
+        
+        # Validate and clamp values to prevent abuse
+        timeout_ms = max(min(timeout_ms, 10000), 500)  # Between 0.5s and 10s
+        sleep_duration = max(min(sleep_duration, 5.0), 0.1)  # Between 0.1s and 5s
+        
+        # Set statement timeout
+        db.session.execute(text(f"SET LOCAL statement_timeout = '{timeout_ms}ms'"))
+        
+        # Use a sleep duration that should complete within the timeout
+        db.session.execute(text(f"SELECT pg_sleep({sleep_duration})"))
+        
         latency = time.time() - start
         result = {
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "message": "Database operation completed successfully"
+            "message": f"Database operation completed successfully (timeout={timeout_ms}ms, sleep={sleep_duration}s)"
         }
         _resolve_live_incidents(error_code, "/test-fault/db-timeout", latency)
+        
     except Exception as e:
         db.session.rollback()
         latency = time.time() - start
         
-        # Sanitize the error message
-        sanitized_error = _sanitize_error_message(str(e))
+        # Check if it's a timeout-related error
+        error_str = str(e).lower()
+        if "timeout" in error_str or "canceling statement" in error_str:
+            reason = "db_timeout_or_pool_exhaustion"
+            detail = f"Database operation timed out after {latency:.2f}s"
+        else:
+            reason = "db_error"
+            detail = str(e)[:200]
         
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": sanitized_error,
+            "detail": detail,
             "latency": f"{latency:.2f}s",
         }
 
         msg = (
             f"{error_code} route=/test-fault/db-timeout "
-            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
+            f"reason={reason} latency={latency:.2f}"
         )
         _log_fault_event(msg)
 
@@ -437,7 +423,7 @@ def test_fault_db_timeout():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/db-timeout",
-                reason="db_timeout_or_pool_exhaustion",
+                reason=reason,
                 latency=latency,
             )
         except Exception:
