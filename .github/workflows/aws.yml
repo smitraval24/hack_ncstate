@@ -103,9 +103,9 @@ jobs:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: false
+        wait-for-service-stability: true
 
-    # Fire-and-forget: ECS handles rollout; notify dashboard immediately.
+    # Notify dashboard after ECS confirms the new task is stable.
     - name: Notify dashboard - deploy success
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
