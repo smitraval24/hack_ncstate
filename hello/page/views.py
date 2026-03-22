@@ -4,6 +4,8 @@ import os
 import sys
 import time
 from importlib.metadata import version
+import html
+import re
 
 from flask import Blueprint, render_template, request
 
@@ -92,44 +94,64 @@ def test_db_timeout():
         return _render_fault(f"Database error: {str(e)}")
 
 
+def _validate_and_sanitize_input(user_input):
+    """
+    Properly validate and sanitize user input to prevent SQL injection.
+    Uses whitelist approach with strict validation.
+    """
+    if not user_input:
+        return ""
+    
+    # First, HTML escape to prevent XSS
+    sanitized = html.escape(user_input)
+    
+    # Strict whitelist: only allow alphanumeric characters, spaces, and basic punctuation
+    # This is much safer than blacklisting specific patterns
+    allowed_pattern = re.compile(r'^[a-zA-Z0-9\s\.\,\!\?\-\_]+$')
+    
+    if not allowed_pattern.match(sanitized):
+        # If input contains disallowed characters, reject it entirely
+        raise ValueError("Input contains invalid characters. Only letters, numbers, spaces, and basic punctuation are allowed.")
+    
+    # Additional length restriction to prevent buffer overflow attempts
+    max_length = 200
+    if len(sanitized) > max_length:
+        raise ValueError(f"Input too long. Maximum {max_length} characters allowed.")
+    
+    return sanitized.strip()
+
+
 @page.post("/test-fault/run")
 def run_test_fault():
-    """Handle test fault execution with proper input validation."""
+    """Handle test fault execution with proper input validation and SQL injection prevention."""
     if not ENABLE_FAULT_INJECTION:
         return _render_fault("Fault injection is disabled")
     
     # Get user input safely
     user_input = request.form.get('query', '')
     
-    # Validate and sanitize input to prevent SQL injection
-    if user_input:
-        # Remove potentially dangerous SQL keywords and characters
-        dangerous_patterns = [
-            ';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 
-            'EXEC', 'EXECUTE', 'UNION', 'SELECT', 'CREATE', 'ALTER'
-        ]
+    try:
+        # Validate and sanitize input using whitelist approach
+        sanitized_input = _validate_and_sanitize_input(user_input)
         
-        sanitized_input = user_input
-        for pattern in dangerous_patterns:
-            sanitized_input = sanitized_input.replace(pattern.upper(), '')
-            sanitized_input = sanitized_input.replace(pattern.lower(), '')
-        
-        # Only allow alphanumeric characters, spaces, and safe punctuation
-        import re
-        sanitized_input = re.sub(r'[^a-zA-Z0-9\s\.\,\!\?]', '', sanitized_input)
-        
-        try:
-            # Execute query with timeout protection
+        if sanitized_input:
+            # Process the sanitized input safely
             def process_query():
+                # In a real application, this would use parameterized queries
+                # For this demo, we just safely process the validated input
                 return f"Query processed safely: {sanitized_input[:100]}"
             
             result = _execute_db_operation_with_timeout(process_query)
             
-        except TimeoutError as e:
-            result = f"Query timeout error: {str(e)}"
-        except Exception as e:
-            result = f"Query processing error: {str(e)}"
-    else:
-        result = "No query provided"
+        else:
+            result = "No valid query provided"
+            
+    except ValueError as e:
+        # Input validation failed
+        result = f"Input validation error: {str(e)}"
+    except TimeoutError as e:
+        result = f"Query timeout error: {str(e)}"
+    except Exception as e:
+        result = f"Query processing error: {str(e)}"
     
     return _render_fault(result)
