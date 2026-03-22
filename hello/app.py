@@ -12,6 +12,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from hello.extensions import db, debug_toolbar, flask_static_digest
 from hello.incident.views import incident_bp
+from hello.page._fault_cores import faults
 from hello.page.views import page
 from hello.up.views import up
 from hello.developer.views import developer
@@ -60,6 +61,7 @@ def create_app(settings_override=None):
 
     app.register_blueprint(up)
     app.register_blueprint(page)
+    app.register_blueprint(faults)
     app.register_blueprint(developer)
     app.register_blueprint(incident_bp)
 

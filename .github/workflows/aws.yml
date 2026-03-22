@@ -84,6 +84,7 @@ jobs:
         image: ${{ steps.build-image.outputs.image }}
         environment-variables: |
           SECRET_KEY=${{ secrets.SECRET_KEY }}
+          BUILD_SHA=${{ github.sha }}
 
     - name: Deploy Amazon ECS task definition
       uses: aws-actions/amazon-ecs-deploy-task-definition@v2
@@ -91,9 +92,9 @@ jobs:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: false
+        wait-for-service-stability: true
 
-    # Notify dashboard immediately — don't wait for ECS stability
+    # Notify dashboard only after ECS reports the new task set is stable.
     - name: Notify dashboard - deploy success
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}

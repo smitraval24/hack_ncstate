@@ -27,6 +27,7 @@ from hello.incident.live_store import (
 page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
+BUILD_SHA = os.environ.get("BUILD_SHA", "").strip()
 
 
 # This function handles the home work for this file.
@@ -46,6 +47,7 @@ def _render_fault(result=None):
         "page/test_fault.html",
         flask_ver=version("flask"),
         python_ver=PYTHON_VER,
+        build_sha=(BUILD_SHA[:7] if BUILD_SHA else "local"),
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
@@ -57,7 +59,6 @@ def test_fault():
     return _render_fault()
 
 
-@page.post("/test-fault/run")
 def test_fault_run():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -91,7 +92,6 @@ def test_fault_run():
     return _render_fault(result), (500 if result["status"] == "error" else 200)
 
 
-@page.post("/test-fault/external-api")
 def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -194,7 +194,6 @@ def test_fault_external_api():
     return _render_fault(result), (504 if result["status"] == "error" else 200)
 
 
-@page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
     if not ENABLE_FAULT_INJECTION:
         return "", 404

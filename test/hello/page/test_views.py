@@ -1,8 +1,8 @@
 """This file keeps tests for the page part of the project so new changes stay safe."""
 
-import requests
 from unittest.mock import Mock
 
+import requests
 from flask import url_for
 
 from lib.test import ViewTestMixin
@@ -25,22 +25,31 @@ class TestPage(ViewTestMixin):
         assert b"Fault Injection Test Page" in response.data
         assert b"Demo Control" in response.data
         assert b"External API Latency Simulation" in response.data
+        assert b"Build local" in response.data
 
-    def test_test_fault_run_succeeds_after_sql_fix(self, monkeypatch):
-        execute = Mock()
-        resolve_live_incidents = Mock()
+    def test_sql_fault_route_wrapper_delegates_to_page_views(self, monkeypatch):
+        wrapped = Mock(return_value=("wrapped-response", 200))
+        monkeypatch.setattr("hello.page._fault_cores.page_views.test_fault_run", wrapped)
 
-        monkeypatch.setattr("hello.page.views.db.session.execute", execute)
-        monkeypatch.setattr("hello.page.views._resolve_live_incidents", resolve_live_incidents)
-
-        response = self.client.post(url_for("page.test_fault_run"))
+        response = self.client.post("/test-fault/run")
 
         assert response.status_code == 200
+        assert response.data == b"wrapped-response"
+        wrapped.assert_called_once_with()
+
+    def test_test_fault_run_returns_fault_signal(self, monkeypatch):
+        execute = Mock(side_effect=RuntimeError("bad sql"))
+        rollback = Mock()
+
+        monkeypatch.setattr("hello.page.views.db.session.execute", execute)
+        monkeypatch.setattr("hello.page.views.db.session.rollback", rollback)
+
+        response = self.client.post("/test-fault/run")
+
+        assert response.status_code == 500
+        assert b"FAULT_SQL_INJECTION_TEST" in response.data
         execute.assert_called_once()
-        resolve_live_incidents.assert_called_once_with(
-            "FAULT_SQL_INJECTION_TEST",
-            "/test-fault/run",
-        )
+        rollback.assert_called_once()
 
     def test_test_fault_external_api_returns_timeout_fault_signal(self, monkeypatch):
         monkeypatch.setattr(
@@ -48,7 +57,7 @@ class TestPage(ViewTestMixin):
             Mock(side_effect=requests.exceptions.Timeout("timed out")),
         )
 
-        response = self.client.post(url_for("page.test_fault_external_api"))
+        response = self.client.post("/test-fault/external-api")
 
         assert response.status_code == 504
         assert b"FAULT_EXTERNAL_API_LATENCY" in response.data
@@ -60,7 +69,7 @@ class TestPage(ViewTestMixin):
         monkeypatch.setattr("hello.page.views.db.session.execute", execute)
         monkeypatch.setattr("hello.page.views.db.session.rollback", rollback)
 
-        response = self.client.post(url_for("page.test_fault_db_timeout"))
+        response = self.client.post("/test-fault/db-timeout")
 
         assert response.status_code == 500
         assert b"FAULT_DB_TIMEOUT" in response.data
