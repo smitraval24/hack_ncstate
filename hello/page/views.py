@@ -90,13 +90,14 @@ def test_fault_external_api():
 
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
+    mock_api_base_url = os.getenv("MOCK_API_BASE_URL", "http://mock_api:5001").rstrip("/")
 
     start = time.time()
 
     try:
         # INTENTIONAL BUG: 3s timeout against mock API with 60% chance of 2-8s delay
         # and 30% chance of HTTP 500 — fails ~70% of the time
-        r = requests.get("http://mock_api:5001/data", timeout=3)
+        r = requests.get(f"{mock_api_base_url}/data", timeout=3)
         latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
         r.raise_for_status()

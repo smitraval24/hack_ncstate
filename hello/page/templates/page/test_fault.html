@@ -596,8 +596,9 @@
         <div class="fault-card__number">02</div>
         <h2 class="fault-card__title">External API Latency Simulation</h2>
         <p class="fault-card__body">
-          Calls <code>mock_api:5001/data</code>, which can inject 2-8 second latency and upstream
-          500 responses so the external dependency path can be exercised.
+          Calls the configured mock API endpoint at <code>MOCK_API_BASE_URL/data</code>
+          (defaulting to <code>mock_api:5001/data</code> locally), which can inject 2-8 second
+          latency and upstream 500 responses so the external dependency path can be exercised.
         </p>
         <div class="fault-card__meta">
           <span>Route</span>

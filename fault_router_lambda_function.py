@@ -157,9 +157,11 @@ def invoke_claude(incident, analysis):
         ),
         "FAULT_EXTERNAL_API_LATENCY": (
             "The function test_fault_external_api() calls the mock API with a 3-second "
-            "timeout that is too short (the API delays 2-8 seconds). Fix by increasing "
-            "the timeout to at least 10 seconds and/or adding retry logic with backoff. "
-            "The goal is for the call to succeed instead of timing out."
+            "timeout that is too short (the API delays 2-8 seconds) and may see transient "
+            "HTTP 500s. Preserve the env-based MOCK_API_BASE_URL lookup (fallback "
+            "http://mock_api:5001), increase the timeout to at least 10 seconds, and add "
+            "retry logic with backoff for transient timeout / HTTP 500 failures. The goal "
+            "is for the call to succeed reliably after remediation."
         ),
         "FAULT_DB_TIMEOUT": (
             "The function test_fault_db_timeout() sets statement_timeout='2s' then runs "

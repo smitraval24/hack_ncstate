@@ -773,6 +773,29 @@ def _restore_faulty_functions(current_source: str, fault_codes: list[str]) -> st
     return updated_source
 
 
+def _fault_codes_differing_from_template(current_source: str) -> list[str]:
+    """Return fault codes whose current function body no longer matches the faulty template."""
+    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
+
+    differing_fault_codes = []
+
+    for fault_code, function_name in FAULT_FUNCTION_MAP.items():
+        try:
+            _, _, current_block = _function_source_block(current_source, function_name)
+            _, _, faulty_block = _function_source_block(
+                FAULTY_VIEWS_CONTENT,
+                function_name,
+            )
+        except ValueError:
+            differing_fault_codes.append(fault_code)
+            continue
+
+        if current_block != faulty_block:
+            differing_fault_codes.append(fault_code)
+
+    return sorted(differing_fault_codes)
+
+
 def _invoke_github_lambda(function_name: str, parameters: list[dict]) -> dict:
     """Invoke the GitHub helper Lambda and unwrap its response body."""
     from config.settings import GITHUB_LAMBDA_NAME
@@ -1109,11 +1132,15 @@ def reset_incidents():
         # Restore only the fault handlers that the self-healing loop already
         # fixed. Faults that were never triggered stay untouched.
         code_reset_result = _reset_faulty_code(resettable_fault_codes)
+        restored_fault_codes = code_reset_result.get(
+            "fault_codes",
+            resettable_fault_codes,
+        )
 
         return jsonify({
             "success": True,
             "deleted": count,
-            "restored_fault_codes": resettable_fault_codes,
+            "restored_fault_codes": restored_fault_codes,
             "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
             "self_healing": "paused (use /developer/incidents/arm-healing to enable)",
@@ -1205,18 +1232,21 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
         fault_code for fault_code in fault_codes if fault_code in FAULT_FUNCTION_MAP
     ]
 
-    if not resettable_fault_codes:
-        logger.info("Reset skipped: no auto-healed faults to restore")
-        return {
-            "method": "none",
-            "success": True,
-            "skipped": True,
-            "fault_codes": [],
-            "message": "No auto-healed faults needed to be restored.",
-        }
-
     try:
         current_content, read_method = _read_github_file_content(file_path)
+        drifted_fault_codes = _fault_codes_differing_from_template(current_content)
+        resettable_fault_codes = sorted(
+            set(resettable_fault_codes) | set(drifted_fault_codes)
+        )
+        if not resettable_fault_codes:
+            logger.info("Reset skipped: all fault handlers already match the faulty template")
+            return {
+                "method": "none",
+                "success": True,
+                "skipped": True,
+                "fault_codes": [],
+                "message": "Fault handlers already match the faulty template.",
+            }
         reset_content = _restore_faulty_functions(
             current_content,
             resettable_fault_codes,

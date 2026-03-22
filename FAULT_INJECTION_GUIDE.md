@@ -67,7 +67,8 @@ db.session.execute(text("SELECT FROM"))  # invalid SQL on purpose
 **File:** `hello/page/views.py` -> `test_fault_external_api()`
 
 ### What it does
-Calls the mock external API (`http://mock_api:5001/data`) with a 3-second timeout.
+Calls the configured mock external API (`$MOCK_API_BASE_URL/data`, default
+`http://mock_api:5001/data` locally) with a 3-second timeout.
 The mock API (`mock_api.py`) is configured with `API_FAULT_MODE=latency,error` which causes:
 - **60% chance** of a 2-8 second random delay (causes timeout when delay > 3s)
 - **30% chance** of returning HTTP 500 (`{"error": "upstream failure"}`)
@@ -88,7 +89,8 @@ On **success** (~30%): Returns HTTP 200 with `{"value": 42}`
 
 ### Key faulty line
 ```python
-r = requests.get("http://mock_api:5001/data", timeout=3)  # 3s timeout vs 2-8s mock delay
+mock_api_base_url = os.getenv("MOCK_API_BASE_URL", "http://mock_api:5001").rstrip("/")
+r = requests.get(f"{mock_api_base_url}/data", timeout=3)  # 3s timeout vs 2-8s mock delay
 ```
 
 ---
@@ -129,7 +131,9 @@ db.session.execute(text("SELECT pg_sleep(5);"))  # always times out (5s > 2s)
 ### What it does
 1. Deletes all live incidents from PostgreSQL
 2. Clears AWS SSM fault cooldown parameters (so faults can be processed again immediately)
-3. Pushes the original faulty `views.py` back to GitHub (triggers CI/CD redeploy)
+3. Reads the current `hello/page/views.py` from GitHub
+4. Restores any fault handler whose current function body differs from the faulty template
+5. Pushes the original faulty function bodies back to GitHub (triggers CI/CD redeploy)
 
 ### How it restores faulty code
 The original faulty `views.py` content is stored in `hello/page/_faulty_views_template.py`.

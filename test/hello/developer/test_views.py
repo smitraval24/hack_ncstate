@@ -8,6 +8,7 @@ from flask import url_for
 from lib.test import ViewTestMixin
 from hello.developer.views import (
     _collect_resettable_fault_codes,
+    _fault_codes_differing_from_template,
     _filter_incidents_after_demo_reset,
     _restore_faulty_functions,
     build_dashboard_aggregates,
@@ -44,7 +45,11 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         current_source = (
             FAULTY_VIEWS_CONTENT
             .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
-            .replace('requests.get("http://mock_api:5001/data", timeout=3)', 'requests.get("http://mock_api:5001/data", timeout=10)', 1)
+            .replace(
+                'requests.get(f"{mock_api_base_url}/data", timeout=3)',
+                'requests.get(f"{mock_api_base_url}/data", timeout=10)',
+                1,
+            )
         )
 
         restored = _restore_faulty_functions(
@@ -53,8 +58,24 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         )
 
         assert 'db.session.execute(text("SELECT FROM"))' in restored
-        assert 'requests.get("http://mock_api:5001/data", timeout=10)' in restored
+        assert 'requests.get(f"{mock_api_base_url}/data", timeout=10)' in restored
         assert restored.count('db.session.execute(text("SELECT FROM"))') == 1
+
+    def test_fault_codes_differing_from_template_detects_healed_handlers(self):
+        current_source = (
+            FAULTY_VIEWS_CONTENT
+            .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
+            .replace(
+                "db.session.execute(text(\"SET LOCAL statement_timeout = \\'2s\\';\"))",
+                "db.session.execute(text(\"SET LOCAL statement_timeout = \\'10s\\';\"))",
+                1,
+            )
+        )
+
+        assert _fault_codes_differing_from_template(current_source) == [
+            "FAULT_DB_TIMEOUT",
+            "FAULT_SQL_INJECTION_TEST",
+        ]
 
     def test_collect_resettable_fault_codes_only_includes_auto_healed_resolved_faults(self):
         incidents = [
@@ -342,13 +363,19 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             },
         ]
         mock_reset_live_incidents.return_value = 2
-        mock_reset_faulty_code.return_value = {"success": True}
+        mock_reset_faulty_code.return_value = {
+            "success": True,
+            "fault_codes": ["FAULT_SQL_INJECTION_TEST", "FAULT_DB_TIMEOUT"],
+        }
 
         response = self.client.post(url_for("developer.reset_incidents"))
 
         assert response.status_code == 200
         payload = response.get_json()
-        assert payload["restored_fault_codes"] == ["FAULT_SQL_INJECTION_TEST"]
+        assert payload["restored_fault_codes"] == [
+            "FAULT_SQL_INJECTION_TEST",
+            "FAULT_DB_TIMEOUT",
+        ]
         mock_reset_faulty_code.assert_called_once_with(["FAULT_SQL_INJECTION_TEST"])
         mock_pause_self_healing.assert_called_once()
         mock_record_demo_reset.assert_called_once()
