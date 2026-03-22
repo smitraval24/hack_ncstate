@@ -4,7 +4,7 @@ import os
 import sys
 from importlib.metadata import version
 
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, request
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -42,3 +42,36 @@ def _render_fault(result=None):
 @page.get("/test-fault")
 def test_fault():
     return _render_fault()
+
+
+@page.post("/test-fault/run")
+def run_test_fault():
+    """Handle test fault execution with proper input validation."""
+    if not ENABLE_FAULT_INJECTION:
+        return _render_fault("Fault injection is disabled")
+    
+    # Get user input safely
+    user_input = request.form.get('query', '')
+    
+    # Validate and sanitize input to prevent SQL injection
+    if user_input:
+        # Remove potentially dangerous SQL keywords and characters
+        dangerous_patterns = [
+            ';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE', 
+            'EXEC', 'EXECUTE', 'UNION', 'SELECT', 'CREATE', 'ALTER'
+        ]
+        
+        sanitized_input = user_input
+        for pattern in dangerous_patterns:
+            sanitized_input = sanitized_input.replace(pattern.upper(), '')
+            sanitized_input = sanitized_input.replace(pattern.lower(), '')
+        
+        # Only allow alphanumeric characters, spaces, and safe punctuation
+        import re
+        sanitized_input = re.sub(r'[^a-zA-Z0-9\s\.\,\!\?]', '', sanitized_input)
+        
+        result = f"Query processed safely: {sanitized_input[:100]}"  # Limit output length
+    else:
+        result = "No query provided"
+    
+    return _render_fault(result)
