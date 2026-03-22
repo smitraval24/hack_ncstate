@@ -61,15 +61,47 @@ def test_fault_run():
 
     try:
         # SECURITY FIX: Use parameterized query to prevent SQL injection
-        # This query safely selects a constant value to test database connectivity
+        # Test database connectivity with a simple, safe query
         # Using bound parameters prevents any potential SQL injection attacks
         query = text("SELECT :test_value as test_result")
-        db.session.execute(query, {"test_value": 1})
-        db.session.commit()
+        result_set = db.session.execute(query, {"test_value": 1})
+        test_result = result_set.scalar()
         
-        # Log successful database test
-        current_app.logger.info("Database connectivity test passed successfully")
+        # Verify the query executed correctly
+        if test_result == 1:
+            db.session.commit()
+            current_app.logger.info("Database connectivity test passed successfully")
+            result = {
+                "status": "ok", 
+                "error_code": None,
+                "detail": "database_connection_healthy",
+                "test_result": test_result
+            }
+        else:
+            # Unexpected result from test query
+            db.session.rollback()
+            raise OperationalError("Database test query returned unexpected result", None, None)
         
+    except OperationalError as e:
+        db.session.rollback()
+        result = {"status": "error", "error_code": error_code}
+
+        msg = (
+            f"{error_code} route=/test-fault/run "
+            f"reason=database_connection_test_failed error={str(e)[:100]}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/run",
+                reason="database_connection_test_failed",
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
+
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
