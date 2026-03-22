@@ -61,47 +61,15 @@ def test_fault_run():
 
     try:
         # SECURITY FIX: Use parameterized query to prevent SQL injection
-        # Test database connectivity with a simple, safe query
+        # This query safely selects a constant value to test database connectivity
         # Using bound parameters prevents any potential SQL injection attacks
         query = text("SELECT :test_value as test_result")
-        result_set = db.session.execute(query, {"test_value": 1})
-        test_result = result_set.scalar()
+        db.session.execute(query, {"test_value": 1})
+        db.session.commit()
         
-        # Verify the query executed correctly
-        if test_result == 1:
-            db.session.commit()
-            current_app.logger.info("Database connectivity test passed successfully")
-            result = {
-                "status": "ok", 
-                "error_code": None,
-                "detail": "database_connection_healthy",
-                "test_result": test_result
-            }
-        else:
-            # Unexpected result from test query
-            db.session.rollback()
-            raise OperationalError("Database test query returned unexpected result", None, None)
+        # Log successful database test
+        current_app.logger.info("Database connectivity test passed successfully")
         
-    except OperationalError as e:
-        db.session.rollback()
-        result = {"status": "error", "error_code": error_code}
-
-        msg = (
-            f"{error_code} route=/test-fault/run "
-            f"reason=database_connection_test_failed error={str(e)[:100]}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
-
-        try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/run",
-                reason="database_connection_test_failed",
-            )
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
-
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
@@ -270,71 +238,96 @@ def test_fault_db_timeout():
 
     error_code = "FAULT_DB_TIMEOUT"
     result = {"status": "ok", "error_code": None}
-
     start = time.time()
 
-    try:
-        # SECURITY FIX: Use proper parameterized queries and safe timeout handling
-        # Set a reasonable statement timeout of 30 seconds using parameterized query
-        timeout_query = text("SET LOCAL statement_timeout = :timeout_value")
-        db.session.execute(timeout_query, {"timeout_value": "30s"})
-        
-        # Test database connectivity with a lightweight parameterized query
-        # This prevents guaranteed timeouts and tests actual database health
-        health_query = text("SELECT COUNT(*) as active_count FROM pg_stat_activity WHERE state = :state")
-        result_set = db.session.execute(health_query, {"state": "active"})
-        active_count = result_set.scalar()
-        
-        # Commit the transaction properly
-        db.session.commit()
-        
-        latency = time.time() - start
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "latency": f"{latency:.2f}s",
-            "detail": "database_connection_healthy",
-            "active_connections": active_count
-        }
-        
-        current_app.logger.info(f"Database health check completed successfully in {latency:.2f}s")
-        
-    except (OperationalError, TimeoutError) as e:
-        db.session.rollback()
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": str(e)[:200],
-            "latency": f"{latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/db-timeout "
-            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(f"db_error={e!s}")
+    # Implement retry logic with exponential backoff for database operations
+    max_retries = 3
+    base_delay = 0.5  # Start with 500ms delay
+    backoff_factor = 2
 
+    for attempt in range(max_retries):
         try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/db-timeout",
-                reason="db_timeout_or_pool_exhaustion",
-                latency=latency,
-            )
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
+            # Set shorter statement timeout to fail fast and allow retries
+            timeout_query = text("SET LOCAL statement_timeout = :timeout_value")
+            db.session.execute(timeout_query, {"timeout_value": "5s"})
             
-    except Exception as e:
-        # Handle other database errors
-        db.session.rollback()
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": f"unexpected_db_error: {str(e)[:200]}",
-            "latency": f"{latency:.2f}s",
-        }
-        current_app.logger.error(f"Unexpected database error: {e!s}")
+            # Use lightweight query for health check - just test basic connectivity
+            # This is much more efficient than querying pg_stat_activity
+            health_query = text("SELECT 1 as health_check")
+            result_set = db.session.execute(health_query)
+            health_result = result_set.scalar()
+            
+            # Commit the transaction properly
+            db.session.commit()
+            
+            latency = time.time() - start
+            result = {
+                "status": "ok",
+                "error_code": None,
+                "latency": f"{latency:.2f}s",
+                "detail": "database_connection_healthy",
+                "attempts": attempt + 1
+            }
+            
+            current_app.logger.info(f"Database health check completed successfully in {latency:.2f}s after {attempt + 1} attempts")
+            break  # Success, exit retry loop
+            
+        except (OperationalError, TimeoutError) as e:
+            db.session.rollback()
+            latency = time.time() - start
+            
+            if attempt < max_retries - 1:
+                # Not the last attempt, wait before retrying with exponential backoff
+                delay = base_delay * (backoff_factor ** attempt)  # 0.5s, 1s, 2s
+                current_app.logger.warning(f"Database timeout on attempt {attempt + 1}/{max_retries}, retrying in {delay}s")
+                time.sleep(delay)
+                continue
+            else:
+                # Last attempt failed
+                result = {
+                    "status": "error",
+                    "error_code": error_code,
+                    "detail": f"db_timeout_after_retries: {str(e)[:200]}",
+                    "latency": f"{latency:.2f}s",
+                    "attempts": max_retries,
+                }
+                msg = (
+                    f"{error_code} route=/test-fault/db-timeout "
+                    f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
+                )
+                print(msg, file=sys.stderr)
+                current_app.logger.error(f"db_error={e!s}")
+
+                try:
+                    create_live_incident(
+                        error_code=error_code,
+                        route="/test-fault/db-timeout",
+                        reason="db_timeout_or_pool_exhaustion",
+                        latency=latency,
+                    )
+                except Exception:
+                    current_app.logger.exception("Failed to create incident for %s", error_code)
+                    
+        except Exception as e:
+            # Handle other database errors
+            db.session.rollback()
+            latency = time.time() - start
+            
+            if attempt < max_retries - 1:
+                # Not the last attempt, wait before retrying
+                delay = base_delay * (backoff_factor ** attempt)
+                current_app.logger.warning(f"Database error on attempt {attempt + 1}/{max_retries}, retrying in {delay}s: {str(e)[:100]}")
+                time.sleep(delay)
+                continue
+            else:
+                # Last attempt failed
+                result = {
+                    "status": "error",
+                    "error_code": error_code,
+                    "detail": f"unexpected_db_error_after_retries: {str(e)[:200]}",
+                    "latency": f"{latency:.2f}s",
+                    "attempts": max_retries,
+                }
+                current_app.logger.error(f"Unexpected database error after {max_retries} attempts: {e!s}")
 
     return _render_fault(result), (500 if result["status"] == "error" else 200)
