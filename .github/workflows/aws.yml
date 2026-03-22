@@ -50,15 +50,6 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Check if mock_api changed
-      id: mock-changed
-      run: |
-        if git diff HEAD~1 --name-only -- Dockerfile.mock_api mock_api.py 2>/dev/null | grep -q .; then
-          echo "changed=true" >> $GITHUB_OUTPUT
-        else
-          echo "changed=false" >> $GITHUB_OUTPUT
-        fi
-
     - name: Build and push app image
       uses: docker/build-push-action@v6
       with:
@@ -70,17 +61,6 @@ jobs:
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
         cache-from: type=gha,scope=app
         cache-to: type=gha,mode=max,scope=app
-
-    - name: Build and push mock_api image
-      if: steps.mock-changed.outputs.changed == 'true'
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: Dockerfile.mock_api
-        push: true
-        tags: ${{ steps.login-ecr.outputs.registry }}/mock-api:latest
-        cache-from: type=gha,scope=mock-api
-        cache-to: type=gha,mode=max,scope=mock-api
 
     - name: Set image output
       id: build-image
@@ -96,6 +76,10 @@ jobs:
         environment-variables: |
           SECRET_KEY=${{ secrets.SECRET_KEY }}
           BUILD_SHA=${{ github.sha }}
+
+    - name: Ensure service is scaled up
+      run: |
+        aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service ${{ env.ECS_SERVICE }} --desired-count 1 --region ${{ env.AWS_REGION }} --no-cli-pager > /dev/null
 
     - name: Deploy Amazon ECS task definition
       id: deploy
