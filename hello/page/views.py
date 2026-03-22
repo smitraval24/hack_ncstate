@@ -6,7 +6,9 @@ from importlib.metadata import version
 
 from flask import Blueprint, render_template, request, flash
 import sqlite3
-import signal
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -15,19 +17,6 @@ page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 BUILD_SHA = os.environ.get("BUILD_SHA", "").strip()
-
-# Database timeout configuration
-DB_TIMEOUT = 5.0  # 5 seconds timeout
-
-
-class TimeoutException(Exception):
-    """Custom exception for database timeouts."""
-    pass
-
-
-def timeout_handler(signum, frame):
-    """Handle timeout signals."""
-    raise TimeoutException("Database operation timed out")
 
 
 # This function handles the home work for this file.
@@ -59,16 +48,9 @@ def test_fault():
     return _render_fault()
 
 
-@page.get("/test-fault/db-timeout")
-def test_fault_db_timeout():
-    """Test endpoint for database timeout scenario."""
-    return _render_fault(result="Database timeout test endpoint")
-
-
 @page.post("/test-fault/run")
 def test_fault_run():
-    """Handle test fault execution with proper SQL injection protection and timeout handling."""
-    conn = None
+    """Handle test fault execution with proper SQL injection protection."""
     try:
         user_input = request.form.get('query', '')
         
@@ -76,43 +58,24 @@ def test_fault_run():
             flash("No query provided", "error")
             return _render_fault()
         
-        # Set up timeout alarm
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(int(DB_TIMEOUT))
+        # Use parameterized queries to prevent SQL injection
+        # Instead of: cursor.execute(f"SELECT * FROM users WHERE id = {user_input}")
+        # Use proper parameterization:
+        conn = sqlite3.connect(':memory:')  # In-memory database for testing
+        cursor = conn.cursor()
         
-        try:
-            # Use parameterized queries to prevent SQL injection with timeout
-            # Set timeout on the connection
-            conn = sqlite3.connect(':memory:', timeout=DB_TIMEOUT)
-            conn.execute("PRAGMA busy_timeout = 5000")  # 5 second busy timeout
-            cursor = conn.cursor()
-            
-            # Create a test table
-            cursor.execute('''CREATE TABLE users (id INTEGER, name TEXT, email TEXT)''')
-            cursor.execute('''INSERT INTO users VALUES (1, 'John Doe', 'john@example.com')''')
-            cursor.execute('''INSERT INTO users VALUES (2, 'Jane Smith', 'jane@example.com')''')
-            
-            # Safe parameterized query - prevents SQL injection
-            cursor.execute("SELECT * FROM users WHERE id = ?", (user_input,))
-            results = cursor.fetchall()
-            
-            # Clear the alarm
-            signal.alarm(0)
-            
-            return _render_fault(result=f"Query executed safely. Results: {results}")
-            
-        except TimeoutException:
-            flash("Database timeout error: Query took too long to execute", "error")
-            return _render_fault()
-        except sqlite3.OperationalError as e:
-            if "timeout" in str(e).lower():
-                flash("Database timeout error: Connection or query timed out", "error")
-            else:
-                flash(f"Database operational error: {str(e)}", "error")
-            return _render_fault()
-        finally:
-            # Always clear the alarm
-            signal.alarm(0)
+        # Create a test table
+        cursor.execute('''CREATE TABLE users (id INTEGER, name TEXT, email TEXT)''')
+        cursor.execute('''INSERT INTO users VALUES (1, 'John Doe', 'john@example.com')''')
+        cursor.execute('''INSERT INTO users VALUES (2, 'Jane Smith', 'jane@example.com')''')
+        
+        # Safe parameterized query - prevents SQL injection
+        cursor.execute("SELECT * FROM users WHERE id = ?", (user_input,))
+        results = cursor.fetchall()
+        
+        conn.close()
+        
+        return _render_fault(result=f"Query executed safely. Results: {results}")
         
     except ValueError:
         flash("Invalid input: Please provide a valid integer ID", "error")
@@ -120,9 +83,50 @@ def test_fault_run():
     except Exception as e:
         flash(f"Database error: {str(e)}", "error")
         return _render_fault()
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass  # Ignore errors when closing connection
+
+
+@page.get("/test-fault/external-api")
+def test_fault_external_api():
+    """Handle external API calls with proper timeout and retry configuration."""
+    try:
+        # Configure session with proper timeout and retry strategy
+        session = requests.Session()
+        
+        # Set up retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        
+        # Make API call with proper timeout (connect timeout: 1s, read timeout: 2s)
+        # This prevents the external_timeout that was causing FAULT_EXTERNAL_API_LATENCY
+        response = session.get(
+            "https://httpbin.org/delay/1",  # Test endpoint that delays for 1 second
+            timeout=(1.0, 2.0)  # (connect_timeout, read_timeout)
+        )
+        
+        response.raise_for_status()
+        result = {
+            "status_code": response.status_code,
+            "response_time": response.elapsed.total_seconds(),
+            "data": response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text[:200]
+        }
+        
+        return _render_fault(result=f"External API call successful: {result}")
+        
+    except requests.exceptions.Timeout:
+        flash("External API timeout - request took too long", "error")
+        return _render_fault(result="ERROR: External API timeout")
+    except requests.exceptions.ConnectionError:
+        flash("External API connection error", "error")
+        return _render_fault(result="ERROR: External API connection failed")
+    except requests.exceptions.RequestException as e:
+        flash(f"External API error: {str(e)}", "error")
+        return _render_fault(result=f"ERROR: External API request failed - {str(e)}")
+    except Exception as e:
+        flash(f"Unexpected error: {str(e)}", "error")
+        return _render_fault(result=f"ERROR: Unexpected error - {str(e)}")
