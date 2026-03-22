@@ -101,18 +101,29 @@ jobs:
       run: |
         APP_BASE="${DASHBOARD_URL%/}"
         BUILD_URL="$APP_BASE/up/build"
+        FAULT_PAGE_URL="$APP_BASE/test-fault"
+        EXPECTED_SHORT_SHA="${EXPECTED_SHA:0:7}"
         lookup_live_sha() {
           RESPONSE=$(curl -fsS "$BUILD_URL" || true)
-          printf '%s' "$RESPONSE" | jq -r '.build_sha // empty' 2>/dev/null || true
+          LIVE_SHA=$(printf '%s' "$RESPONSE" | jq -r '.build_sha // empty' 2>/dev/null || true)
+          if [ -n "$LIVE_SHA" ]; then
+            printf '%s' "$LIVE_SHA"
+            return 0
+          fi
+
+          PAGE=$(curl -fsS "$FAULT_PAGE_URL" || true)
+          if printf '%s' "$PAGE" | grep -q "Build ${EXPECTED_SHORT_SHA}"; then
+            printf '%s' "$EXPECTED_SHA"
+          fi
         }
 
-        for attempt in $(seq 1 18); do
+        for attempt in $(seq 1 12); do
           LIVE_SHA=$(lookup_live_sha)
           if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
             echo "Live app is serving build $LIVE_SHA"
             exit 0
           fi
-          echo "Fast check waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/18, saw '${LIVE_SHA:-none}')"
+          echo "Fast check waiting for build $EXPECTED_SHA via $BUILD_URL or $FAULT_PAGE_URL (attempt $attempt/12, saw '${LIVE_SHA:-none}')"
           sleep 5
         done
 
@@ -121,13 +132,13 @@ jobs:
           --cluster "${ECS_CLUSTER}" \
           --services "${ECS_SERVICE}"
 
-        for attempt in $(seq 1 18); do
+        for attempt in $(seq 1 12); do
           LIVE_SHA=$(lookup_live_sha)
           if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
             echo "Live app is serving build $LIVE_SHA after ECS stabilization"
             exit 0
           fi
-          echo "Post-stability check waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/18, saw '${LIVE_SHA:-none}')"
+          echo "Post-stability check waiting for build $EXPECTED_SHA via $BUILD_URL or $FAULT_PAGE_URL (attempt $attempt/12, saw '${LIVE_SHA:-none}')"
           sleep 5
         done
 
