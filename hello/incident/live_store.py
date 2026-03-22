@@ -1,61 +1,46 @@
-"""Redis-backed live incident store for the developer dashboard.
+"""PostgreSQL-backed live incident store for the developer dashboard.
 
 When a fault is injected, an incident is created here in the developer-
-dashboard-compatible format (nested dicts).  The developer dashboard reads
-from this store instead of mock data, giving real-time visibility into
-injected faults.
-
-Falls back to an in-memory store when Redis is unavailable so incidents
-are never silently lost.
+dashboard-compatible format (nested dicts) and persisted to PostgreSQL.
+This survives container restarts and ECS deployments.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import threading
-import time
 from datetime import datetime
 from typing import Any
 
-import redis
-from flask import current_app
+from sqlalchemy import inspect
+
+from hello.extensions import db
+from hello.incident.models import LiveIncident
 
 logger = logging.getLogger(__name__)
 
-INCIDENT_LIST_KEY = "live_incidents:list"
-INCIDENT_KEY_PREFIX = "live_incidents:detail:"
-INCIDENT_COUNTER_KEY = "live_incidents:counter"
-
-# ---------------------------------------------------------------------------
-# In-memory fallback (used when Redis is unreachable)
-# ---------------------------------------------------------------------------
-_mem_lock = threading.Lock()
-_mem_incidents: dict[str, dict] = {}  # id -> incident dict
-_mem_order: list[str] = []            # newest first
-_mem_counter: int = 0
+_table_checked = False
 
 
-def _redis() -> redis.Redis:
-    url = current_app.config.get("REDIS_URL", "redis://redis:6379/0")
-    return redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
-
-
-def _redis_available() -> redis.Redis | None:
-    """Return a Redis client if reachable, else None."""
+def _ensure_table() -> None:
+    """Create the live_incidents table if it doesn't exist yet."""
+    global _table_checked
+    if _table_checked:
+        return
     try:
-        r = _redis()
-        r.ping()
-        return r
+        if not inspect(db.engine).has_table("live_incidents"):
+            LiveIncident.__table__.create(db.engine)
+            logger.info("Created live_incidents table")
+        _table_checked = True
     except Exception:
-        return None
+        logger.warning("Could not verify/create live_incidents table", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
 
-def _serialize_incident(inc: dict) -> str:
+def _serialize(inc: dict) -> str:
     """JSON-encode an incident, converting datetimes to ISO strings."""
     def _convert(obj: Any) -> Any:
         if isinstance(obj, datetime):
@@ -73,7 +58,7 @@ def _serialize_incident(inc: dict) -> str:
     return json.dumps(safe)
 
 
-def _deserialize_incident(raw: str) -> dict:
+def _deserialize(raw: str) -> dict:
     """JSON-decode an incident, converting ISO strings back to datetimes."""
     inc = json.loads(raw)
     for key in ("timestamp_opened", "timestamp_resolved"):
@@ -161,6 +146,12 @@ def _build_incident(
     }
 
 
+def _next_incident_id() -> str:
+    """Generate the next LIVE-NNNN id based on the max existing id."""
+    row = db.session.query(db.func.max(LiveIncident.id)).scalar() or 0
+    return f"LIVE-{row + 1:04d}"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -171,136 +162,58 @@ def create_incident(
     reason: str,
     latency: float | None = None,
 ) -> dict:
-    """Create a new live incident. Uses Redis when available, memory otherwise."""
-    r = _redis_available()
+    """Create a new live incident and persist it to PostgreSQL."""
+    _ensure_table()
+    incident_id = _next_incident_id()
+    incident = _build_incident(incident_id, error_code, route, reason, latency)
 
-    if r is not None:
-        try:
-            seq = r.incr(INCIDENT_COUNTER_KEY)
-            incident_id = f"LIVE-{seq:04d}"
-            incident = _build_incident(incident_id, error_code, route, reason, latency)
-            r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
-            r.lpush(INCIDENT_LIST_KEY, incident_id)
-            logger.info("Created live incident %s for %s (redis)", incident_id, error_code)
-            return incident
-        except Exception:
-            logger.warning("Redis write failed, falling back to memory", exc_info=True)
+    row = LiveIncident(incident_id=incident_id, data=_serialize(incident))
+    db.session.add(row)
+    db.session.commit()
 
-    # In-memory fallback
-    global _mem_counter
-    with _mem_lock:
-        _mem_counter += 1
-        incident_id = f"LIVE-{_mem_counter:04d}"
-        incident = _build_incident(incident_id, error_code, route, reason, latency)
-        _mem_incidents[incident_id] = incident
-        _mem_order.insert(0, incident_id)
-    logger.info("Created live incident %s for %s (memory)", incident_id, error_code)
+    logger.info("Created live incident %s for %s", incident_id, error_code)
     return incident
 
 
 def update_incident(incident_id: str, updates: dict) -> dict | None:
-    """Update fields on a live incident."""
-    r = _redis_available()
+    """Update fields on a live incident in PostgreSQL."""
+    _ensure_table()
+    row = LiveIncident.query.filter_by(incident_id=incident_id).first()
+    if not row:
+        return None
 
-    if r is not None:
-        try:
-            raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
-            if raw:
-                incident = _deserialize_incident(raw)
-                for key, value in updates.items():
-                    if isinstance(value, dict) and isinstance(incident.get(key), dict):
-                        incident[key].update(value)
-                    else:
-                        incident[key] = value
-                r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
-                return incident
-        except Exception:
-            logger.warning("Redis update failed for %s, trying memory", incident_id, exc_info=True)
+    incident = _deserialize(row.data)
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(incident.get(key), dict):
+            incident[key].update(value)
+        else:
+            incident[key] = value
 
-    # In-memory fallback
-    with _mem_lock:
-        incident = _mem_incidents.get(incident_id)
-        if not incident:
-            return None
-        for key, value in updates.items():
-            if isinstance(value, dict) and isinstance(incident.get(key), dict):
-                incident[key].update(value)
-            else:
-                incident[key] = value
-        _mem_incidents[incident_id] = incident
+    row.data = _serialize(incident)
+    row.updated_at = datetime.utcnow()
+    db.session.commit()
     return incident
 
 
 def get_incident(incident_id: str) -> dict | None:
     """Get a single live incident by ID."""
-    r = _redis_available()
-
-    if r is not None:
-        try:
-            raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
-            if raw:
-                return _deserialize_incident(raw)
-        except Exception:
-            logger.warning("Redis read failed for %s, trying memory", incident_id, exc_info=True)
-
-    with _mem_lock:
-        return _mem_incidents.get(incident_id)
+    _ensure_table()
+    row = LiveIncident.query.filter_by(incident_id=incident_id).first()
+    if not row:
+        return None
+    return _deserialize(row.data)
 
 
 def get_all_incidents() -> list[dict]:
     """Return all live incidents, most recent first."""
-    incidents: list[dict] = []
-    r = _redis_available()
-
-    if r is not None:
-        try:
-            ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
-            for inc_id in ids:
-                if isinstance(inc_id, bytes):
-                    inc_id = inc_id.decode()
-                raw = r.get(f"{INCIDENT_KEY_PREFIX}{inc_id}")
-                if raw:
-                    incidents.append(_deserialize_incident(raw))
-        except Exception:
-            logger.warning("Redis read-all failed, falling back to memory", exc_info=True)
-            incidents = []
-
-    # Always merge in-memory incidents (they may exist alongside Redis ones)
-    with _mem_lock:
-        redis_ids = {i["id"] for i in incidents}
-        for inc_id in _mem_order:
-            if inc_id not in redis_ids:
-                inc = _mem_incidents.get(inc_id)
-                if inc:
-                    incidents.append(inc)
-
-    return incidents
+    _ensure_table()
+    rows = LiveIncident.query.order_by(LiveIncident.created_at.desc()).all()
+    return [_deserialize(row.data) for row in rows]
 
 
 def reset_all() -> int:
-    """Delete all live incidents. Returns count deleted."""
-    count = 0
-    r = _redis_available()
-
-    if r is not None:
-        try:
-            ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
-            for inc_id in ids:
-                if isinstance(inc_id, bytes):
-                    inc_id = inc_id.decode()
-                r.delete(f"{INCIDENT_KEY_PREFIX}{inc_id}")
-                count += 1
-            r.delete(INCIDENT_LIST_KEY)
-            r.delete(INCIDENT_COUNTER_KEY)
-        except Exception:
-            logger.warning("Redis reset failed", exc_info=True)
-
-    # Also clear in-memory store
-    global _mem_counter
-    with _mem_lock:
-        count += len(_mem_incidents)
-        _mem_incidents.clear()
-        _mem_order.clear()
-        _mem_counter = 0
-
+    """Delete all live incidents from PostgreSQL. Returns count deleted."""
+    _ensure_table()
+    count = LiveIncident.query.delete()
+    db.session.commit()
     return count

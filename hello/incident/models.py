@@ -90,3 +90,29 @@ class Incident(db.Model):
 
     def __repr__(self):
         return f"<Incident {self.id} [{self.error_code}]>"
+
+
+class LiveIncident(db.Model):
+    """Stores live incident dicts as JSON in PostgreSQL.
+
+    This survives container restarts and ECS deployments, unlike Redis
+    or in-memory stores.
+    """
+
+    __tablename__ = "live_incidents"
+
+    id = db.Column(db.Integer, primary_key=True)
+    incident_id = db.Column(db.String(64), nullable=False, unique=True, index=True)
+    data = db.Column(db.Text, nullable=False)
+    created_at = db.Column(
+        db.DateTime, default=datetime.datetime.utcnow, nullable=False
+    )
+    updated_at = db.Column(
+        db.DateTime,
+        default=datetime.datetime.utcnow,
+        onupdate=datetime.datetime.utcnow,
+        nullable=False,
+    )
+
+    def __repr__(self):
+        return f"<LiveIncident {self.incident_id}>"
