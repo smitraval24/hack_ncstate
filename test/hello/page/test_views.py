@@ -76,6 +76,23 @@ class TestPage(ViewTestMixin):
         create_live_incident.assert_called_once()
         assert create_live_incident.call_args.kwargs["reason"] == "external_timeout"
 
+    def test_test_fault_external_api_returns_wrong_data_fault_signal(self, monkeypatch):
+        create_live_incident = Mock()
+        response_mock = Mock()
+        response_mock.raise_for_status.return_value = None
+        response_mock.json.return_value = {"value": "forty-two", "source": "corrupted"}
+
+        monkeypatch.setattr("hello.page.fault_api.requests.get", Mock(return_value=response_mock))
+        monkeypatch.setattr("hello.page.fault_api.create_live_incident", create_live_incident)
+
+        response = self.client.post("/test-fault/external-api")
+
+        assert response.status_code == 504
+        assert b"FAULT_EXTERNAL_API_LATENCY" in response.data
+        assert b"wrong_data" in response.data
+        create_live_incident.assert_called_once()
+        assert create_live_incident.call_args.kwargs["reason"] == "wrong_data"
+
     def test_test_fault_db_timeout_returns_fault_signal(self, monkeypatch):
         execute = Mock(side_effect=[None, RuntimeError("statement timeout")])
         rollback = Mock()

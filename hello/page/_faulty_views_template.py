@@ -81,6 +81,16 @@ from hello.incident.live_store import (
 from hello.page.views import _render_fault
 
 
+def _record_external_api_incident(reason: str, latency: float) -> None:
+    """Persist a live incident for the external API fault route."""
+    create_live_incident(
+        error_code="FAULT_EXTERNAL_API_LATENCY",
+        route="/test-fault/external-api",
+        reason=reason,
+        latency=latency,
+    )
+
+
 def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -92,16 +102,39 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # INTENTIONAL BUG: 3s timeout against mock API with 60% chance of 2-8s delay
-        # and 30% chance of HTTP 500 — fails ~70% of the time
+        # INTENTIONAL BUG: 3s timeout against mock API with a high chance of
+        # latency or malformed data.
         r = requests.get(f"{mock_api_base_url}/data", timeout=3)
         latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
         r.raise_for_status()
+        payload = r.json()
+        if payload.get("value") != 42:
+            result = {
+                "status": "error",
+                "error_code": error_code,
+                "detail": "wrong_data",
+                "latency": f"{latency:.2f}s",
+                "data": payload,
+            }
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=wrong_data latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
+
+            try:
+                _record_external_api_incident("wrong_data", latency)
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
+
+            return _render_fault(result), 504
+
         result = {
             "status": "ok",
             "error_code": None,
-            "data": r.json(),
+            "data": payload,
             "latency": f"{latency:.2f}s",
         }
 
@@ -121,12 +154,7 @@ def test_fault_external_api():
         current_app.logger.error(msg)
 
         try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason="external_timeout",
-                latency=latency,
-            )
+            _record_external_api_incident("external_timeout", latency)
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
@@ -146,12 +174,7 @@ def test_fault_external_api():
         current_app.logger.error(msg)
 
         try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason="upstream_failure",
-                latency=latency,
-            )
+            _record_external_api_incident("upstream_failure", latency)
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
@@ -171,12 +194,7 @@ def test_fault_external_api():
         current_app.logger.error(msg)
 
         try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason="connection_error",
-                latency=latency,
-            )
+            _record_external_api_incident("connection_error", latency)
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
