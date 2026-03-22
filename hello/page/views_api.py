@@ -2,7 +2,6 @@
 
 This is the ONLY file the self-healing loop may edit when remediating
 this fault code.  The route is registered on the page blueprint.
-
 """
 
 import os
@@ -16,7 +15,7 @@ from config.settings import ENABLE_FAULT_INJECTION
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import page, _render_fault
+from hello.page.views import _is_fault_verification_request, _render_fault, page
 
 
 def _record_external_api_incident(reason: str, latency: float) -> None:
@@ -36,6 +35,7 @@ def test_fault_external_api():
 
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
+    verification_only = _is_fault_verification_request()
     mock_api_base_url = os.getenv("MOCK_API_BASE_URL", "http://mock_api:5001").rstrip("/")
 
     start = time.time()
@@ -56,17 +56,18 @@ def test_fault_external_api():
                 "latency": f"{latency:.2f}s",
                 "data": payload,
             }
-            msg = (
-                f"{error_code} route=/test-fault/external-api "
-                f"reason=wrong_data latency={latency:.2f}"
-            )
-            print(msg, file=sys.stderr)
-            current_app.logger.error(msg)
+            if not verification_only:
+                msg = (
+                    f"{error_code} route=/test-fault/external-api "
+                    f"reason=wrong_data latency={latency:.2f}"
+                )
+                print(msg, file=sys.stderr)
+                current_app.logger.error(msg)
 
-            try:
-                _record_external_api_incident("wrong_data", latency)
-            except Exception:
-                current_app.logger.exception("Failed to create incident for %s", error_code)
+                try:
+                    _record_external_api_incident("wrong_data", latency)
+                except Exception:
+                    current_app.logger.exception("Failed to create incident for %s", error_code)
 
             return _render_fault(result), 504
 
@@ -85,17 +86,18 @@ def test_fault_external_api():
             "detail": "timeout",
             "latency": f"{latency:.2f}s",
         }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=external_timeout latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
+        if not verification_only:
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=external_timeout latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
 
-        try:
-            _record_external_api_incident("external_timeout", latency)
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
+            try:
+                _record_external_api_incident("external_timeout", latency)
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
 
         return _render_fault(result), 504
 
@@ -107,17 +109,18 @@ def test_fault_external_api():
             "detail": "upstream_500",
             "latency": f"{latency:.2f}s",
         }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=upstream_failure latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
+        if not verification_only:
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=upstream_failure latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
 
-        try:
-            _record_external_api_incident("upstream_failure", latency)
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
+            try:
+                _record_external_api_incident("upstream_failure", latency)
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
 
         return _render_fault(result), 504
 
@@ -129,17 +132,18 @@ def test_fault_external_api():
             "detail": "connection_refused",
             "latency": f"{latency:.2f}s",
         }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=connection_error latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
+        if not verification_only:
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=connection_error latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
 
-        try:
-            _record_external_api_incident("connection_error", latency)
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
+            try:
+                _record_external_api_incident("connection_error", latency)
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
 
         return _render_fault(result), 504
 

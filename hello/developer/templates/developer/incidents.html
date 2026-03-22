@@ -622,29 +622,35 @@
           </p>
 
           <div class="hero-source-row">
-            {% if data_source in ('live', 'live+cloudwatch') %}
-              <span class="source-pill source-pill--live">
-                Source: {{ 'Live + CloudWatch' if data_source == 'live+cloudwatch' else 'Live Injected' }}
-              </span>
-            {% elif data_source == 'cloudwatch' %}
-              <span class="source-pill source-pill--cloud">Source: CloudWatch Logs</span>
-            {% else %}
-              <span class="source-pill source-pill--idle">No incidents in the current feed</span>
-            {% endif %}
+            <span
+              class="{% if data_source in ('live', 'live+cloudwatch') %}source-pill source-pill--live{% elif data_source == 'cloudwatch' %}source-pill source-pill--cloud{% else %}source-pill source-pill--idle{% endif %}"
+              id="data-source-pill"
+            >
+              {% if data_source == 'live+cloudwatch' %}
+                Source: Live + CloudWatch
+              {% elif data_source == 'live' %}
+                Source: Live Injected
+              {% elif data_source == 'cloudwatch' %}
+                Source: CloudWatch Logs
+              {% else %}
+                No incidents in the current feed
+              {% endif %}
+            </span>
 
-            {% if cloudwatch_error %}
-              <span class="mini-pill">{{ cloudwatch_error }}</span>
-            {% endif %}
+            <span class="mini-pill" id="cloudwatch-status-pill" {% if not cloudwatch_error %}hidden{% endif %}>
+              {{ cloudwatch_error or '' }}
+            </span>
+            <span class="mini-pill" id="dashboard-refresh-pill">Polling every 5s</span>
           </div>
 
           <div class="hero-actions">
-            <span class="mini-pill">
+            <span class="mini-pill" id="hero-active-count">
               {{ metrics.active_incidents }} active
             </span>
-            <span class="mini-pill">
+            <span class="mini-pill" id="hero-resolved-count">
               {{ metrics.resolved_total }} resolved
             </span>
-            <span class="mini-pill">
+            <span class="mini-pill" id="hero-impacted-count">
               {{ dashboard_aggregates.impacted_requests_total }} impacted requests
             </span>
             {% if data_source in ('live', 'live+cloudwatch') %}
@@ -853,6 +859,13 @@
       return 'source-pill source-pill--idle';
     }
 
+    function sourceBadgeLabel(source) {
+      if (source === 'live+cloudwatch') return 'Source: Live + CloudWatch';
+      if (source === 'live') return 'Source: Live Injected';
+      if (source === 'cloudwatch') return 'Source: CloudWatch Logs';
+      return 'No incidents in the current feed';
+    }
+
     function escapeHtml(value) {
       return String(value ?? '')
         .replace(/&/g, '&amp;')
@@ -914,12 +927,16 @@
     function populateFilters(incidents) {
       const routeSelect = document.getElementById('filter-route');
       const errorSelect = document.getElementById('filter-error');
+      const previousRoute = routeSelect.value || 'all';
+      const previousError = errorSelect.value || 'all';
 
       const routes = uniqueSortedValues(incidents, 'route');
       const errors = uniqueSortedValues(incidents, 'error_code');
 
       routeSelect.innerHTML = '<option value="all">All routes</option>' + routes.map((route) => `<option value="${escapeHtml(route)}">${escapeHtml(route)}</option>`).join('');
       errorSelect.innerHTML = '<option value="all">All error codes</option>' + errors.map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`).join('');
+      routeSelect.value = routes.includes(previousRoute) ? previousRoute : 'all';
+      errorSelect.value = errors.includes(previousError) ? previousError : 'all';
     }
 
     function applyFilters(incidents) {
@@ -1093,48 +1110,94 @@
       if (el) el.textContent = value;
     }
 
+    function updateRefreshStatus(message) {
+      const el = document.getElementById('dashboard-refresh-pill');
+      if (el) el.textContent = message;
+    }
+
     function updateDashboardFromPayload(data) {
-      latestIncidents = data.incidents || [];
+      const metrics = data.metrics || {
+        active_incidents: 0,
+        resolved_total: 0,
+        auto_resolution_rate: 0,
+        mttr: 0,
+        resolved_today: 0,
+      };
+      const aggregates = data.dashboard_aggregates || {
+        impacted_requests_total: 0,
+        severity_counts: { critical: 0, high: 0, medium: 0, unknown: 0 },
+        type_distribution: { labels: [], values: [] },
+        route_impact: { labels: [], values: [] },
+      };
+      const trend = data.trend_data || { labels: [], detected: [], resolved: [] };
+
+      latestIncidents = Array.isArray(data.incidents) ? data.incidents : [];
       populateFilters(latestIncidents);
       renderIncidents(latestIncidents);
 
-      updateMetricText('metric-active', data.metrics.active_incidents);
-      updateMetricText('metric-resolved', data.metrics.resolved_total);
-      updateMetricText('metric-auto', `${data.metrics.auto_resolution_rate}%`);
-      document.getElementById('metric-mttr').innerHTML = `${data.metrics.mttr}<span>min</span>`;
-      updateMetricText('metric-resolved-today', data.metrics.resolved_today);
-      updateMetricText('metric-impacted', data.dashboard_aggregates.impacted_requests_total);
-      updateMetricText('posture-critical', data.dashboard_aggregates.severity_counts.critical);
-      updateMetricText('posture-auto', `${data.metrics.auto_resolution_rate}%`);
-      updateMetricText('posture-mttr', `${data.metrics.mttr}m`);
+      updateMetricText('metric-active', metrics.active_incidents);
+      updateMetricText('metric-resolved', metrics.resolved_total);
+      updateMetricText('metric-auto', `${metrics.auto_resolution_rate}%`);
+      document.getElementById('metric-mttr').innerHTML = `${metrics.mttr}<span>min</span>`;
+      updateMetricText('metric-resolved-today', metrics.resolved_today);
+      updateMetricText('metric-impacted', aggregates.impacted_requests_total);
+      updateMetricText('posture-critical', aggregates.severity_counts.critical);
+      updateMetricText('posture-auto', `${metrics.auto_resolution_rate}%`);
+      updateMetricText('posture-mttr', `${metrics.mttr}m`);
+      updateMetricText('hero-active-count', `${metrics.active_incidents} active`);
+      updateMetricText('hero-resolved-count', `${metrics.resolved_total} resolved`);
+      updateMetricText('hero-impacted-count', `${aggregates.impacted_requests_total} impacted requests`);
 
-      trendChart.data.labels = data.trend_data.labels;
-      trendChart.data.datasets[0].data = data.trend_data.detected;
-      trendChart.data.datasets[1].data = data.trend_data.resolved;
+      const sourcePill = document.getElementById('data-source-pill');
+      if (sourcePill) {
+        sourcePill.className = sourceBadgeClass(data.data_source);
+        sourcePill.textContent = sourceBadgeLabel(data.data_source);
+      }
+
+      const cloudwatchStatus = document.getElementById('cloudwatch-status-pill');
+      if (cloudwatchStatus) {
+        const message = data.cloudwatch_error || '';
+        cloudwatchStatus.hidden = !message;
+        cloudwatchStatus.textContent = message;
+      }
+
+      updateRefreshStatus(`Live at ${data.refreshed_at || 'just now'}`);
+
+      trendChart.data.labels = trend.labels;
+      trendChart.data.datasets[0].data = trend.detected;
+      trendChart.data.datasets[1].data = trend.resolved;
       trendChart.update();
 
       severityChart.data.datasets[0].data = [
-        data.dashboard_aggregates.severity_counts.critical,
-        data.dashboard_aggregates.severity_counts.high,
-        data.dashboard_aggregates.severity_counts.medium,
-        data.dashboard_aggregates.severity_counts.unknown,
+        aggregates.severity_counts.critical,
+        aggregates.severity_counts.high,
+        aggregates.severity_counts.medium,
+        aggregates.severity_counts.unknown,
       ];
       severityChart.update();
 
-      typeChart.data.labels = aggregateLabelsOrFallback(data.dashboard_aggregates.type_distribution.labels);
-      typeChart.data.datasets[0].data = aggregateValuesOrFallback(data.dashboard_aggregates.type_distribution.values);
+      typeChart.data.labels = aggregateLabelsOrFallback(aggregates.type_distribution.labels);
+      typeChart.data.datasets[0].data = aggregateValuesOrFallback(aggregates.type_distribution.values);
       typeChart.update();
 
-      routeChart.data.labels = aggregateLabelsOrFallback(data.dashboard_aggregates.route_impact.labels);
-      routeChart.data.datasets[0].data = aggregateValuesOrFallback(data.dashboard_aggregates.route_impact.values);
+      routeChart.data.labels = aggregateLabelsOrFallback(aggregates.route_impact.labels);
+      routeChart.data.datasets[0].data = aggregateValuesOrFallback(aggregates.route_impact.values);
       routeChart.update();
     }
 
     function updateDashboard() {
       fetch('/developer/incidents/api/data')
-        .then((res) => res.json())
+        .then((res) => {
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+          return res.json();
+        })
         .then((data) => updateDashboardFromPayload(data))
-        .catch((err) => console.warn('Dashboard refresh failed:', err));
+        .catch((err) => {
+          updateRefreshStatus(`Refresh failed: ${err.message}`);
+          console.warn('Dashboard refresh failed:', err);
+        });
     }
 
     document.querySelectorAll('.filters-row select').forEach((select) => {

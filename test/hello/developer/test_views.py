@@ -265,14 +265,17 @@ class TestDeveloperIncidentViews(ViewTestMixin):
 
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views.create_live_incident")
+    @patch("hello.developer.views._verify_fault_route")
     @patch("hello.developer.views.get_live_incidents")
     def test_pipeline_callback_creates_resolved_incident_when_missing(
         self,
         mock_get_live_incidents,
+        mock_verify_fault_route,
         mock_create_live_incident,
         mock_update_live_incident,
     ):
         mock_get_live_incidents.return_value = []
+        mock_verify_fault_route.return_value = (True, "passed", 0.42)
         mock_create_live_incident.return_value = {
             "id": "LIVE-0002",
             "symptoms": {"error_rate_value": 1, "latency_p95_value": 5.0},
@@ -294,14 +297,20 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             route="/test-fault/db-timeout",
             reason="pipeline_success",
         )
+        mock_verify_fault_route.assert_called_once_with(
+            "FAULT_DB_TIMEOUT",
+            "/test-fault/db-timeout",
+        )
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0002"
         assert mock_update_live_incident.call_args.args[1]["status"] == "resolved"
 
     @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views._verify_fault_route")
     @patch("hello.developer.views.get_live_incidents")
     def test_pipeline_callback_updates_only_requested_fault_code(
         self,
         mock_get_live_incidents,
+        mock_verify_fault_route,
         mock_update_live_incident,
     ):
         mock_get_live_incidents.return_value = [
@@ -318,6 +327,7 @@ class TestDeveloperIncidentViews(ViewTestMixin):
                 "symptoms": {"latency_p95_value": 5},
             },
         ]
+        mock_verify_fault_route.return_value = (True, "passed", 0.18)
         mock_update_live_incident.return_value = {"id": "LIVE-0001"}
 
         response = self.client.post(
@@ -332,8 +342,58 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert response.get_json()["updated"] == ["LIVE-0001"]
         assert mock_update_live_incident.call_count == 1
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0001"
+        mock_verify_fault_route.assert_called_once_with(
+            "FAULT_SQL_INJECTION_TEST",
+            "/test-fault/run",
+        )
+
+    @patch("hello.developer.views._clear_fault_cooldowns")
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views._verify_fault_route")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_callback_keeps_incident_in_progress_when_route_still_fails(
+        self,
+        mock_get_live_incidents,
+        mock_verify_fault_route,
+        mock_update_live_incident,
+        mock_clear_fault_cooldowns,
+    ):
+        mock_get_live_incidents.return_value = [
+            {
+                "id": "LIVE-0007",
+                "error_code": "FAULT_SQL_INJECTION_TEST",
+                "status": "in_progress",
+                "route": "/test-fault/run",
+                "symptoms": {"latency_p95_value": 0.8},
+            }
+        ]
+        mock_verify_fault_route.return_value = (False, "http_500", 1.25)
+        mock_update_live_incident.return_value = {"id": "LIVE-0007"}
+        mock_clear_fault_cooldowns.return_value = {
+            "cleared": ["FAULT_SQL_INJECTION_TEST"],
+            "errors": {},
+        }
+
+        response = self.client.post(
+            url_for("developer.pipeline_callback"),
+            json={
+                "fault_codes": ["FAULT_SQL_INJECTION_TEST"],
+                "status": "success",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["updated"] == ["LIVE-0007"]
+        mock_clear_fault_cooldowns.assert_called_once_with(["FAULT_SQL_INJECTION_TEST"])
+        assert mock_update_live_incident.call_args.args[0] == "LIVE-0007"
+        updates = mock_update_live_incident.call_args.args[1]
+        assert updates["status"] == "in_progress"
+        assert updates["verification"]["success"] is False
+        assert updates["verification"]["health_check_status"] == "http_500"
+        assert updates["verification"]["latency_after"] == 1.25
 
     @patch("hello.developer.views._reset_faulty_code")
+    @patch("hello.developer.views._clear_fault_cooldowns")
     @patch("hello.developer.views._record_demo_reset")
     @patch("hello.developer.views.reset_live_incidents")
     @patch("hello.developer.views.get_live_incidents")
@@ -342,6 +402,7 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         mock_get_live_incidents,
         mock_reset_live_incidents,
         mock_record_demo_reset,
+        mock_clear_fault_cooldowns,
         mock_reset_faulty_code,
     ):
         mock_get_live_incidents.return_value = [
@@ -359,6 +420,14 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             },
         ]
         mock_reset_live_incidents.return_value = 2
+        mock_clear_fault_cooldowns.return_value = {
+            "cleared": [
+                "FAULT_DB_TIMEOUT",
+                "FAULT_EXTERNAL_API_LATENCY",
+                "FAULT_SQL_INJECTION_TEST",
+            ],
+            "errors": {},
+        }
         mock_reset_faulty_code.return_value = {
             "success": True,
             "fault_codes": ["FAULT_SQL_INJECTION_TEST", "FAULT_DB_TIMEOUT"],
@@ -372,8 +441,57 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             "FAULT_SQL_INJECTION_TEST",
             "FAULT_DB_TIMEOUT",
         ]
-        mock_reset_faulty_code.assert_called_once_with(["FAULT_SQL_INJECTION_TEST"])
+        assert payload["cleared_cooldowns"] == [
+            "FAULT_DB_TIMEOUT",
+            "FAULT_EXTERNAL_API_LATENCY",
+            "FAULT_SQL_INJECTION_TEST",
+        ]
+        mock_clear_fault_cooldowns.assert_called_once_with([
+            "FAULT_DB_TIMEOUT",
+            "FAULT_EXTERNAL_API_LATENCY",
+            "FAULT_SQL_INJECTION_TEST",
+        ])
+        mock_reset_faulty_code.assert_called_once_with([
+            "FAULT_DB_TIMEOUT",
+            "FAULT_EXTERNAL_API_LATENCY",
+            "FAULT_SQL_INJECTION_TEST",
+        ])
         mock_record_demo_reset.assert_called_once()
+
+    @patch("hello.developer.views._fetch_incidents")
+    def test_incidents_api_data_handles_missing_nested_sections(self, mock_fetch_incidents):
+        now = datetime.now().replace(microsecond=0)
+        mock_fetch_incidents.return_value = (
+            [
+                {
+                    "id": "INC-NULLS",
+                    "timestamp_opened": now,
+                    "timestamp_resolved": None,
+                    "incident_type": "External API Degradation",
+                    "severity": "high",
+                    "status": "detected",
+                    "route": "/test-fault/external-api",
+                    "error_code": "FAULT_EXTERNAL_API_LATENCY",
+                    "symptoms": None,
+                    "breadcrumbs": None,
+                    "root_cause": None,
+                    "remediation": None,
+                    "verification": None,
+                }
+            ],
+            "live",
+            "CloudWatch fetch failed: boom",
+        )
+
+        response = self.client.get("/developer/incidents/api/data")
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["cloudwatch_error"] == "CloudWatch fetch failed: boom"
+        assert payload["incidents"][0]["remediation"] == {}
+        assert payload["incidents"][0]["verification"] == {}
+        assert payload["incidents"][0]["root_cause"] == {}
+        assert payload["incidents"][0]["symptoms"] == {}
 
     @patch("hello.developer.views.update_live_incident")
     def test_pipeline_resolve_all_is_a_noop(self, mock_update_live_incident):

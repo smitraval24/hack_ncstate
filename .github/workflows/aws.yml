@@ -88,26 +88,8 @@ jobs:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: false
-
-    - name: Wait for new task to be running
-      run: |
-        echo "Waiting for a task with the new deployment to reach RUNNING state..."
-        for attempt in $(seq 1 30); do
-          RUNNING=$(aws ecs describe-services \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --services ${{ env.ECS_SERVICE }} \
-            --query 'services[0].deployments[?status==`PRIMARY`].runningCount | [0]' \
-            --output text 2>/dev/null || echo "0")
-          if [ "$RUNNING" -ge 1 ] 2>/dev/null; then
-            echo "New task is RUNNING (attempt $attempt)"
-            exit 0
-          fi
-          echo "Waiting for new task... (attempt $attempt/30, running: $RUNNING)"
-          sleep 10
-        done
-        echo "Timed out waiting for new task"
-        exit 1
+        wait-for-service-stability: true
+        wait-for-minutes: 8
 
     # Notify dashboard after the new task is running.
     - name: Notify dashboard - deploy success

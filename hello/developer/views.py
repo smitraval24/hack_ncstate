@@ -4,12 +4,13 @@ import base64
 import json
 import logging
 import os
+from urllib.parse import urlsplit
 from collections import Counter
 from datetime import datetime, timedelta
 
 import redis
 import requests as http_requests
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, current_app, has_request_context, jsonify, render_template, request
 
 from config.settings import CLOUDWATCH_ENABLED
 from hello.aws.cloudwatch_logs import (
@@ -53,6 +54,7 @@ FAULT_ROUTE_MAP = {
 AUTO_HEAL_ACTION_TYPES = {"auto_fix_pushed"}
 DEMO_RESET_TIMESTAMP_PARAM = "/cream/demo-reset-timestamp"
 _demo_reset_timestamp: datetime | None = None
+FAULT_VERIFICATION_HEADER = "X-Fault-Verification"
 
 
 
@@ -520,13 +522,11 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
 
     Resolution sources (checked in order):
     1. verification.success already set (by pipeline callback) → honour it.
-    2. Any incident still in detected/in_progress → hit the app health
-       endpoint and, if healthy, auto-resolve immediately.
+    2. Any incident still in detected/in_progress → verify the specific fault
+       route and auto-resolve only when that route now returns success.
     """
     now = datetime.now()
-
-    # Only run the health check once per sync pass (not per incident)
-    health_ok: bool | None = None
+    verification_cache: dict[tuple[str, str], tuple[bool, str, float | None]] = {}
 
     for inc in incidents:
         verification = inc.get("verification") or {}
@@ -558,11 +558,25 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
                 if not exec_ts or (now - exec_ts) < wait:
                     continue  # still deploying, let the callback handle it
 
-            if health_ok is None:
-                health_ok = _app_health_ok()
+            cache_key = (
+                str(inc.get("error_code") or ""),
+                str(inc.get("route") or ""),
+            )
+            if cache_key not in verification_cache:
+                verification_cache[cache_key] = _verify_fault_route(
+                    inc.get("error_code", ""),
+                    inc.get("route") or None,
+                )
 
-            if health_ok:
-                _auto_resolve_incident(inc, now)
+            verified_ok, health_status, latency_after = verification_cache[cache_key]
+            verification["health_check_status"] = health_status
+            verification["success"] = verified_ok
+            if latency_after is not None:
+                verification["latency_after"] = round(latency_after, 2)
+            inc["verification"] = verification
+
+            if verified_ok:
+                _auto_resolve_incident(inc, now, latency_after)
 
         # Ensure confidence score is populated when root cause exists
         root_cause = inc.get("root_cause") or {}
@@ -572,30 +586,64 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
     return incidents
 
 
-def _app_health_ok() -> bool:
-    """Quick health check against the running app.
+def _fault_verification_base_url() -> str:
+    """Resolve the base URL used to probe healed fault routes."""
+    explicit = os.getenv("FAULT_VERIFY_BASE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
 
-    Tries the app's own /health endpoint. Falls back to True if we can't
-    determine (e.g. running locally without the full stack).
-    """
-    health_url = os.getenv("HEALTH_CHECK_URL", "http://localhost:8000/health")
+    health_url = os.getenv("HEALTH_CHECK_URL", "").strip()
+    if health_url:
+        parsed = urlsplit(health_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    if has_request_context():
+        return request.host_url.rstrip("/")
+
+    return "http://localhost:8000"
+
+
+def _verify_fault_route(
+    fault_code: str,
+    route: str | None = None,
+) -> tuple[bool, str, float | None]:
+    """Probe the fault route itself to confirm the fix is actually live."""
+    target_route = (route or _default_route_for_fault_code(fault_code) or "").strip()
+    if not target_route:
+        return False, "missing_route", None
+
+    url = f"{_fault_verification_base_url()}{target_route}"
+    timeout = float(os.getenv("FAULT_VERIFY_TIMEOUT_SECONDS", "20"))
+    started_at = datetime.now()
+
     try:
-        resp = http_requests.get(health_url, timeout=3)
-        return resp.status_code == 200
-    except Exception:
-        # If we can't reach the health endpoint, assume healthy so that
-        # incidents don't stay stuck forever during a demo / local dev.
-        logger.debug("Health check unreachable (%s), assuming healthy", health_url)
-        return True
+        response = http_requests.post(
+            url,
+            headers={FAULT_VERIFICATION_HEADER: "1"},
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.warning("Fault verification request failed for %s via %s: %s", fault_code, url, exc)
+        return False, "unreachable", None
+
+    latency_seconds = (datetime.now() - started_at).total_seconds()
+    if response.status_code < 400:
+        return True, "passed", latency_seconds
+    return False, f"http_{response.status_code}", latency_seconds
 
 
-def _auto_resolve_incident(inc: dict, now: datetime) -> None:
+def _auto_resolve_incident(
+    inc: dict,
+    now: datetime,
+    latency_after: float | None = None,
+) -> None:
     """Mark an incident as auto-resolved and persist the change."""
     inc["status"] = "resolved"
     inc["timestamp_resolved"] = now
     inc["verification"] = {
         "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
-        "latency_after": 0,
+        "latency_after": round(latency_after, 2) if latency_after is not None else 0,
         "health_check_status": "passed",
         "success": True,
     }
@@ -730,6 +778,43 @@ def _record_demo_reset(timestamp: datetime) -> None:
         )
     except Exception as exc:
         logger.warning("Could not store demo reset timestamp: %s", exc)
+
+
+def _fault_cooldown_param_name(fault_code: str) -> str:
+    """Return the SSM parameter path used for fault cooldown tracking."""
+    return f"/cream/fault-cooldown/{fault_code}"
+
+
+def _clear_fault_cooldowns(fault_codes: list[str]) -> dict[str, list[str] | dict[str, str]]:
+    """Best-effort clear of SSM cooldown markers for the provided faults."""
+    cleared: list[str] = []
+    errors: dict[str, str] = {}
+
+    if not fault_codes:
+        return {"cleared": cleared, "errors": errors}
+
+    try:
+        import boto3
+
+        ssm = boto3.client("ssm")
+    except Exception as exc:
+        logger.warning("Could not initialize SSM client for cooldown reset: %s", exc)
+        return {
+            "cleared": cleared,
+            "errors": {fault_code: str(exc) for fault_code in fault_codes},
+        }
+
+    for fault_code in fault_codes:
+        try:
+            ssm.delete_parameter(Name=_fault_cooldown_param_name(fault_code))
+            cleared.append(fault_code)
+        except Exception as exc:
+            if _is_parameter_not_found(exc):
+                continue
+            logger.warning("Could not clear cooldown for %s: %s", fault_code, exc)
+            errors[fault_code] = str(exc)
+
+    return {"cleared": cleared, "errors": errors}
 
 
 def _filter_incidents_after_demo_reset(incidents: list[dict]) -> list[dict]:
@@ -937,7 +1022,7 @@ def incidents_dashboard():
 @developer.get("/developer/incidents/api/data")
 def incidents_api_data():
     """JSON API for real-time dashboard updates via polling."""
-    incidents, data_source, _ = _fetch_incidents()
+    incidents, data_source, cloudwatch_error = _fetch_incidents()
 
     incidents = _sort_incidents_for_dashboard(incidents)
     metrics = get_dashboard_metrics(incidents)
@@ -958,9 +1043,14 @@ def incidents_api_data():
         s = dict(inc)
         for key in ("timestamp_opened", "timestamp_resolved"):
             s[key] = _fmt_dt(s.get(key))
-        if s.get("remediation", {}).get("execution_timestamp"):
-            s["remediation"] = dict(s["remediation"])
-            s["remediation"]["execution_timestamp"] = _fmt_dt(s["remediation"]["execution_timestamp"])
+        remediation = dict(s.get("remediation") or {})
+        if remediation.get("execution_timestamp"):
+            remediation["execution_timestamp"] = _fmt_dt(remediation["execution_timestamp"])
+        s["remediation"] = remediation
+        s["root_cause"] = dict(s.get("root_cause") or {})
+        s["verification"] = dict(s.get("verification") or {})
+        s["symptoms"] = dict(s.get("symptoms") or {})
+        s["breadcrumbs"] = dict(s.get("breadcrumbs") or {})
         s["affected_requests_value"] = _incident_affected_requests(inc)
         s["failure_summary"] = _incident_failure_summary(inc)
         serialized.append(s)
@@ -971,6 +1061,8 @@ def incidents_api_data():
         "dashboard_aggregates": dashboard_aggregates,
         "incidents": serialized,
         "data_source": data_source,
+        "cloudwatch_error": cloudwatch_error,
+        "refreshed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
 
@@ -1123,6 +1215,7 @@ def reset_incidents():
         count = reset_live_incidents()
         reset_at = datetime.now()
         _record_demo_reset(reset_at)
+        cooldown_reset = _clear_fault_cooldowns(sorted(FAULT_FILE_PATH_MAP.keys()))
 
         # Always restore ALL known fault handlers to their faulty template
         # code so the full self-healing demo cycle can be re-tested.
@@ -1137,6 +1230,8 @@ def reset_incidents():
             "success": True,
             "deleted": count,
             "restored_fault_codes": restored_fault_codes,
+            "cleared_cooldowns": cooldown_reset["cleared"],
+            "cooldown_reset_errors": cooldown_reset["errors"],
             "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
         })
@@ -1385,6 +1480,16 @@ def pipeline_callback():
 
     for fault_code in fault_codes:
         matched_incident_ids = []
+        verified_ok = pipeline_status == "success"
+        health_status = None
+        latency_after = None
+        if pipeline_status == "success":
+            verified_ok, health_status, latency_after = _verify_fault_route(
+                fault_code,
+                _default_route_for_fault_code(fault_code),
+            )
+            if not verified_ok:
+                _clear_fault_cooldowns([fault_code])
 
         for inc in live_incidents:
             if inc.get("error_code") != fault_code:
@@ -1393,13 +1498,13 @@ def pipeline_callback():
                 continue
 
             matched_incident_ids.append(inc["id"])
-            if pipeline_status == "success":
+            if pipeline_status == "success" and verified_ok:
                 updates = {
                     "status": "resolved",
                     "timestamp_resolved": now,
                     "verification": {
                         "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
-                        "latency_after": 0,
+                        "latency_after": round(latency_after, 2) if latency_after is not None else 0,
                         "health_check_status": "passed",
                         "success": True,
                     },
@@ -1411,8 +1516,10 @@ def pipeline_callback():
                     "status": "in_progress",
                     "verification": {
                         "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
-                        "latency_after": None,
-                        "health_check_status": "failed",
+                        "latency_after": (
+                            round(latency_after, 2) if latency_after is not None else None
+                        ),
+                        "health_check_status": health_status or "failed",
                         "success": False,
                     },
                     "commit_sha": data.get("commit_sha", ""),
@@ -1431,13 +1538,13 @@ def pipeline_callback():
             route=_default_route_for_fault_code(fault_code),
             reason="pipeline_success" if pipeline_status == "success" else "pipeline_failure",
         )
-        if pipeline_status == "success":
+        if pipeline_status == "success" and verified_ok:
             updates = {
                 "status": "resolved",
                 "timestamp_resolved": now,
                 "verification": {
                     "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
-                    "latency_after": 0,
+                    "latency_after": round(latency_after, 2) if latency_after is not None else 0,
                     "health_check_status": "passed",
                     "success": True,
                 },
@@ -1449,8 +1556,8 @@ def pipeline_callback():
                 "status": "in_progress",
                 "verification": {
                     "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
-                    "latency_after": None,
-                    "health_check_status": "failed",
+                    "latency_after": round(latency_after, 2) if latency_after is not None else None,
+                    "health_check_status": health_status or "failed",
                     "success": False,
                 },
                 "commit_sha": data.get("commit_sha", ""),

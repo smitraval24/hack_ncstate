@@ -4,7 +4,7 @@ import os
 import sys
 from importlib.metadata import version
 
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, request
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -39,6 +39,15 @@ def _render_fault(result=None):
     )
 
 
+def _is_fault_verification_request() -> bool:
+    """Return True when a request is probing a fault route after remediation."""
+    header_value = request.headers.get("X-Fault-Verification", "")
+    query_value = request.args.get("verify", "")
+    return str(header_value).lower() in {"1", "true", "yes", "on"} or str(
+        query_value
+    ).lower() in {"1", "true", "yes", "on"}
+
+
 @page.get("/test-fault")
 def test_fault():
     return _render_fault()
@@ -47,4 +56,17 @@ def test_fault():
 # Import fault route modules so their @page routes get registered.
 # Each views_*.py file is the ONLY file the self-healing loop edits
 # for its respective fault code.
-from hello.page import views_sql, views_db, views_api  # noqa: F401, E402
+#
+# These imports are wrapped in try/except so that a bad fix pushed by the
+# self-healing loop (syntax error, missing import, etc.) cannot crash the
+# entire application — only the affected fault route becomes unavailable
+# while the rest of the app stays healthy and keeps serving traffic.
+import logging as _logging
+
+_fault_log = _logging.getLogger(__name__)
+
+for _mod_name in ("views_sql", "views_db", "views_api"):
+    try:
+        __import__(f"hello.page.{_mod_name}")
+    except Exception:
+        _fault_log.exception("Failed to import fault module %s — route disabled", _mod_name)

@@ -51,6 +51,24 @@ class TestPage(ViewTestMixin):
             reason="invalid_sql_executed",
         )
 
+    def test_test_fault_run_verification_probe_skips_incident_creation(self, monkeypatch):
+        execute = Mock(side_effect=RuntimeError("bad sql"))
+        rollback = Mock()
+        create_live_incident = Mock()
+
+        monkeypatch.setattr("hello.page.views_sql.db.session.execute", execute)
+        monkeypatch.setattr("hello.page.views_sql.db.session.rollback", rollback)
+        monkeypatch.setattr("hello.page.views_sql.create_live_incident", create_live_incident)
+
+        response = self.client.post(
+            "/test-fault/run",
+            headers={"X-Fault-Verification": "1"},
+        )
+
+        assert response.status_code == 500
+        rollback.assert_called_once()
+        create_live_incident.assert_not_called()
+
     def test_test_fault_external_api_returns_timeout_fault_signal(self, monkeypatch):
         create_live_incident = Mock()
         monkeypatch.setattr(

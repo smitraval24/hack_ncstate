@@ -390,6 +390,122 @@ KB_ENTRIES: list[dict] = [
             "Resolved: True\n"
         ),
     },
+
+    # -----------------------------------------------------------------------
+    # CODE-LEVEL SOLUTIONS — exact fixes for each fault code
+    # -----------------------------------------------------------------------
+    {
+        "filename": "kb_solution_sql_001.txt",
+        "content": (
+            "IncidentID: KB-SOL-SQL-001\n"
+            "ErrorCode: FAULT_SQL_INJECTION_TEST\n"
+            "Type: CODE_SOLUTION\n"
+            "File: hello/page/views_sql.py\n"
+            "Function: test_fault_run\n"
+            "Problem: The function executes `db.session.execute(text('SELECT FROM'))` "
+            "which is malformed SQL — missing a column list and table name. PostgreSQL "
+            "rejects it with 'syntax error at or near FROM'.\n"
+            "Solution: Replace the malformed SQL with a valid query. The simplest fix is "
+            "`SELECT 1` which always succeeds. Alternatively use a parameterized query "
+            "like `SELECT :param as test_value` with a bound parameter.\n"
+            "Fixed Code:\n"
+            "    try:\n"
+            "        db.session.execute(text('SELECT 1'))\n"
+            "        db.session.commit()\n"
+            "    except Exception as e:\n"
+            "        db.session.rollback()\n"
+            "        ...\n"
+            "Key Points:\n"
+            "- The line `db.session.execute(text('SELECT FROM'))` is the bug\n"
+            "- Replace 'SELECT FROM' with 'SELECT 1' or any valid SQL\n"
+            "- Keep the try/except and rollback logic intact\n"
+            "- Add db.session.commit() after successful execution\n"
+            "- The function must return HTTP 200 with status 'ok' when fixed\n"
+            "- Do NOT change the route path, function name, or imports\n"
+            "- Do NOT remove the error_code or incident creation logic\n"
+            "Resolved: True\n"
+        ),
+    },
+    {
+        "filename": "kb_solution_api_001.txt",
+        "content": (
+            "IncidentID: KB-SOL-API-001\n"
+            "ErrorCode: FAULT_EXTERNAL_API_LATENCY\n"
+            "Type: CODE_SOLUTION\n"
+            "File: hello/page/views_api.py\n"
+            "Function: test_fault_external_api\n"
+            "Problem: The function calls `requests.get(url, timeout=3)` against the mock "
+            "API which can take longer than 3 seconds. The 3-second timeout causes "
+            "requests.exceptions.Timeout. The mock API may also return wrong data "
+            "(value != 42).\n"
+            "Solution: Increase the timeout to 10 seconds and add retry logic with "
+            "exponential backoff. Validate the payload and retry on wrong data.\n"
+            "Fixed Code:\n"
+            "    import time\n"
+            "    max_retries = 3\n"
+            "    last_error = None\n"
+            "    for attempt in range(max_retries):\n"
+            "        try:\n"
+            "            r = requests.get(f'{mock_api_base_url}/data', timeout=10)\n"
+            "            r.raise_for_status()\n"
+            "            payload = r.json()\n"
+            "            if payload.get('value') == 42:\n"
+            "                latency = time.time() - start\n"
+            "                result = {'status': 'ok', 'error_code': None, "
+            "'data': payload, 'latency': f'{latency:.2f}s'}\n"
+            "                return _render_fault(result), 200\n"
+            "        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, "
+            "requests.exceptions.HTTPError) as e:\n"
+            "            last_error = e\n"
+            "            time.sleep(min(2 ** attempt, 4))\n"
+            "Key Points:\n"
+            "- The bug is `timeout=3` — change it to `timeout=10`\n"
+            "- Add retry logic (2-3 attempts) with backoff\n"
+            "- Preserve the MOCK_API_BASE_URL env var lookup and its fallback\n"
+            "- Preserve the _record_external_api_incident helper calls\n"
+            "- Every except branch MUST have a return statement\n"
+            "- Do NOT change the route path, function name, or blueprint\n"
+            "- The function must return HTTP 200 with status 'ok' when the API responds correctly\n"
+            "Resolved: True\n"
+        ),
+    },
+    {
+        "filename": "kb_solution_db_001.txt",
+        "content": (
+            "IncidentID: KB-SOL-DB-001\n"
+            "ErrorCode: FAULT_DB_TIMEOUT\n"
+            "Type: CODE_SOLUTION\n"
+            "File: hello/page/views_db.py\n"
+            "Function: test_fault_db_timeout\n"
+            "Problem: The function sets `statement_timeout = '5500ms'` then executes "
+            "`SELECT pg_sleep(10)`. The sleep (10s) exceeds the timeout (5.5s), so "
+            "PostgreSQL always cancels the query with a statement timeout error.\n"
+            "Solution: Either reduce pg_sleep to fit within the timeout, or increase "
+            "the timeout above the sleep duration. The simplest fix: change pg_sleep(10) "
+            "to pg_sleep(1) and set statement_timeout to 30000ms.\n"
+            "Fixed Code:\n"
+            "    try:\n"
+            "        db.session.execute(text(\"SET LOCAL statement_timeout = '30000ms';\"))\n"
+            "        db.session.execute(text('SELECT pg_sleep(1);'))\n"
+            "        db.session.commit()\n"
+            "        latency = time.time() - start\n"
+            "        result = {'status': 'ok', 'error_code': None, "
+            "'latency': f'{latency:.2f}s'}\n"
+            "    except Exception as e:\n"
+            "        db.session.rollback()\n"
+            "        ...\n"
+            "Key Points:\n"
+            "- The bug is pg_sleep(10) with statement_timeout='5500ms'\n"
+            "- Change pg_sleep(10) to pg_sleep(1) so it finishes within the timeout\n"
+            "- Change statement_timeout from '5500ms' to '30000ms' for safety\n"
+            "- Remove or reduce the min_delay floor (it was there to fake latency)\n"
+            "- Add db.session.commit() after successful execution\n"
+            "- Keep the try/except and rollback logic intact\n"
+            "- Do NOT change the route path, function name, or imports\n"
+            "- The function must return HTTP 200 with status 'ok' when fixed\n"
+            "Resolved: True\n"
+        ),
+    },
 ]
 
 
