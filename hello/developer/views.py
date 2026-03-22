@@ -945,17 +945,22 @@ def incidents_api_data():
     dashboard_aggregates = build_dashboard_aggregates(incidents)
 
     # Serialize incidents for JSON
+    def _fmt_dt(value):
+        """Safely format a datetime-or-string to 'YYYY-MM-DD HH:MM'."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.strftime("%Y-%m-%d %H:%M")
+        return str(value)  # already a string from deserialization
+
     serialized = []
     for inc in incidents:
         s = dict(inc)
         for key in ("timestamp_opened", "timestamp_resolved"):
-            if s.get(key):
-                s[key] = s[key].strftime("%Y-%m-%d %H:%M")
-            else:
-                s[key] = None
+            s[key] = _fmt_dt(s.get(key))
         if s.get("remediation", {}).get("execution_timestamp"):
             s["remediation"] = dict(s["remediation"])
-            s["remediation"]["execution_timestamp"] = s["remediation"]["execution_timestamp"].strftime("%Y-%m-%d %H:%M")
+            s["remediation"]["execution_timestamp"] = _fmt_dt(s["remediation"]["execution_timestamp"])
         s["affected_requests_value"] = _incident_affected_requests(inc)
         s["failure_summary"] = _incident_failure_summary(inc)
         serialized.append(s)
@@ -1113,11 +1118,8 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear demo state and restore only the faults auto-healing previously fixed."""
+    """Clear demo state and restore ALL faults to their original faulty code."""
     try:
-        existing_incidents = get_live_incidents()
-        resettable_fault_codes = _collect_resettable_fault_codes(existing_incidents)
-
         count = reset_live_incidents()
         reset_at = datetime.now()
         _record_demo_reset(reset_at)
@@ -1126,12 +1128,13 @@ def reset_incidents():
         # faulty code before the user can demo the errors.
         _pause_self_healing()
 
-        # Restore only the fault handlers that the self-healing loop already
-        # fixed. Faults that were never triggered stay untouched.
-        code_reset_result = _reset_faulty_code(resettable_fault_codes)
+        # Always restore ALL known fault handlers to their faulty template
+        # code so the full self-healing demo cycle can be re-tested.
+        all_fault_codes = sorted(FAULT_FILE_PATH_MAP.keys())
+        code_reset_result = _reset_faulty_code(all_fault_codes)
         restored_fault_codes = code_reset_result.get(
             "fault_codes",
-            resettable_fault_codes,
+            all_fault_codes,
         )
 
         return jsonify({

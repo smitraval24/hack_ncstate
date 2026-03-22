@@ -913,5 +913,42 @@
       });
     }
 
+    /* ---- Auto-refresh for non-resolved incidents ----
+       Polls the dashboard API every 5 seconds and reloads this page when the
+       incident's status or remediation data has changed so the user sees
+       healing progress in real time without manually refreshing. */
+    (function () {
+      const INCIDENT_ID = '{{ incident.id }}';
+      const CURRENT_STATUS = '{{ incident.status }}';
+      const CURRENT_ACTION = '{{ (incident.remediation or {}).get("action_type", "") }}';
+      const CURRENT_VERIFICATION = '{{ (incident.verification or {}).get("success", "") }}';
+      const POLL_MS = 5000;
+
+      if (CURRENT_STATUS === 'resolved') return; // nothing more to update
+
+      function checkForUpdates() {
+        fetch('/developer/incidents/api/data')
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            var incidents = data.incidents || [];
+            var match = incidents.find(function (inc) { return inc.id === INCIDENT_ID; });
+            if (!match) return;
+
+            var changed = (
+              match.status !== CURRENT_STATUS ||
+              ((match.remediation || {}).action_type || '') !== CURRENT_ACTION ||
+              String((match.verification || {}).success || '') !== CURRENT_VERIFICATION
+            );
+
+            if (changed) {
+              location.reload();
+            }
+          })
+          .catch(function () { /* silently retry next interval */ });
+      }
+
+      setInterval(checkForUpdates, POLL_MS);
+    })();
+
   </script>
 {% endblock %}

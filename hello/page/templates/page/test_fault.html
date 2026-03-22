@@ -707,7 +707,14 @@
       button.textContent = isBusy ? 'Running...' : idleLabel;
     }
 
-    function showInlineFaultResult(markup, httpStatus) {
+    const FAULT_ROUTE_MAP = {
+      '/test-fault/run':          { name: 'SQL Error Injection',           code: 'FAULT_SQL_INJECTION_TEST' },
+      '/test-fault/external-api': { name: 'External API Latency Simulation', code: 'FAULT_EXTERNAL_API_LATENCY' },
+      '/test-fault/db-timeout':   { name: 'Database Timeout Simulation',   code: 'FAULT_DB_TIMEOUT' },
+    };
+
+    function showInlineFaultResult(markup, httpStatus, route) {
+      const fault = FAULT_ROUTE_MAP[route] || { name: route || 'Unknown', code: 'Unknown' };
       const parser = new DOMParser();
       const doc = parser.parseFromString(markup, 'text/html');
       const incomingSlot = doc.getElementById('fault-result-slot');
@@ -717,7 +724,7 @@
       } else if (httpStatus && httpStatus >= 200 && httpStatus < 300) {
         faultResultSlot.innerHTML = `
           <section class="result-panel result-panel--success is-visible" data-reveal style="--reveal-delay: 60ms;">
-            <div class="result-title">Fault healed &mdash; no error detected</div>
+            <div class="result-title">Fault healed &mdash; ${escapeHtml(fault.name)}</div>
             <div class="result-badge result-badge--ok">HTTP ${httpStatus} &mdash; OK</div>
             <div class="result-grid">
               <div class="result-item">
@@ -730,7 +737,7 @@
               </div>
               <div class="result-item">
                 <div class="result-item__label">Detail</div>
-                <div class="result-item__value">The self-healing loop has fixed this fault. The route executed successfully.</div>
+                <div class="result-item__value">The self-healing loop has fixed <strong>${escapeHtml(fault.code)}</strong>. The route <code>${escapeHtml(route)}</code> executed successfully.</div>
               </div>
               <div class="result-item">
                 <div class="result-item__label">HTTP Status</div>
@@ -742,7 +749,7 @@
       } else if (httpStatus && httpStatus >= 400) {
         faultResultSlot.innerHTML = `
           <section class="result-panel result-panel--danger is-visible" data-reveal style="--reveal-delay: 60ms;">
-            <div class="result-title">Fault triggered</div>
+            <div class="result-title">Fault triggered &mdash; ${escapeHtml(fault.name)}</div>
             <div class="result-badge result-badge--error">HTTP ${httpStatus} &mdash; ERROR</div>
             <div class="result-grid">
               <div class="result-item">
@@ -751,11 +758,11 @@
               </div>
               <div class="result-item">
                 <div class="result-item__label">Error Code</div>
-                <div class="result-item__value">Unknown</div>
+                <div class="result-item__value">${escapeHtml(fault.code)}</div>
               </div>
               <div class="result-item">
                 <div class="result-item__label">Detail</div>
-                <div class="result-item__value">The fault is still active. Waiting for the self-healing loop to fix it.</div>
+                <div class="result-item__value"><strong>${escapeHtml(fault.code)}</strong> is still active on <code>${escapeHtml(route)}</code>. Waiting for the self-healing loop to fix it.</div>
               </div>
               <div class="result-item">
                 <div class="result-item__label">HTTP Status</div>
@@ -820,7 +827,8 @@
             },
           });
           const html = await response.text();
-          showInlineFaultResult(html, response.status);
+          const route = new URL(form.action, location.origin).pathname;
+          showInlineFaultResult(html, response.status, route);
           setFaultStatus(form, '');
         } catch (error) {
           showInlineFaultError(error.message || 'Unknown client error');

@@ -1163,7 +1163,7 @@
     setInterval(updateDashboard, REFRESH_INTERVAL);
 
     function resetIncidents() {
-      if (!confirm('Reset all incidents, clear earlier metrics, and restore only the faults that auto-healing already fixed?\nSelf-healing will stay paused until you click "Arm Self-Healing".')) return;
+      if (!confirm('Reset ALL incidents and restore ALL faults to their original faulty code?\nSelf-healing will stay paused until you click "Arm Self-Healing".')) return;
       fetch('/developer/incidents/reset', { method: 'POST' })
         .then((res) => res.json())
         .then((data) => {

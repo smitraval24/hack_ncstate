@@ -162,17 +162,47 @@ def create_incident(
     reason: str,
     latency: float | None = None,
 ) -> dict:
-    """Create a new live incident and persist it to PostgreSQL."""
+    """Create a new live incident and persist it to PostgreSQL.
+
+    Handles dirty / rolled-back sessions gracefully so callers inside
+    fault-injection ``except`` blocks don't need extra cleanup.
+    """
     _ensure_table()
-    incident_id = _next_incident_id()
-    incident = _build_incident(incident_id, error_code, route, reason, latency)
 
-    row = LiveIncident(incident_id=incident_id, data=_serialize(incident))
-    db.session.add(row)
-    db.session.commit()
+    # Ensure the session is usable – fault handlers call db.session.rollback()
+    # before reaching here, but the session can still be in a subtransaction or
+    # inactive state depending on the SQLAlchemy / Flask-SQLAlchemy version.
+    try:
+        if not db.session.is_active:
+            db.session.rollback()
+    except Exception:
+        db.session.remove()
 
-    logger.info("Created live incident %s for %s", incident_id, error_code)
-    return incident
+    try:
+        incident_id = _next_incident_id()
+        incident = _build_incident(incident_id, error_code, route, reason, latency)
+
+        row = LiveIncident(incident_id=incident_id, data=_serialize(incident))
+        db.session.add(row)
+        db.session.commit()
+
+        logger.info("Created live incident %s for %s", incident_id, error_code)
+        return incident
+    except Exception:
+        db.session.rollback()
+        logger.exception("Failed to create live incident for %s – retrying with fresh session", error_code)
+
+        # Retry once with a fully clean session
+        db.session.remove()
+        incident_id = _next_incident_id()
+        incident = _build_incident(incident_id, error_code, route, reason, latency)
+
+        row = LiveIncident(incident_id=incident_id, data=_serialize(incident))
+        db.session.add(row)
+        db.session.commit()
+
+        logger.info("Created live incident %s for %s (retry succeeded)", incident_id, error_code)
+        return incident
 
 
 def update_incident(incident_id: str, updates: dict) -> dict | None:
