@@ -210,7 +210,7 @@ def test_fault_external_api():
             total_latency = time.time() - overall_start
             result = {
                 "status": "error",
-                "error_code": "CONFIGURATION_ERROR",
+                "error_code": error_code,  # Fixed: Use original error_code instead of CONFIGURATION_ERROR
                 "detail": f"Invalid base URL: {str(ve)}",
                 "latency": f"{total_latency:.2f}s",
             }
