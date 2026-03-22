@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urljoin
 import requests
 from flask import Blueprint, render_template, current_app, abort
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, TimeoutError
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
@@ -119,6 +120,69 @@ def _sanitize_error_message(error: Exception) -> str:
         error_msg = error_msg.replace(keyword.lower(), "[sql_keyword]")
     
     return error_msg.strip()
+
+
+def _safe_database_operation(operation_func, timeout_seconds=2):
+    """
+    Execute a database operation with proper timeout and connection handling.
+    Returns (success, result, error_message, latency)
+    """
+    start_time = time.time()
+    connection = None
+    transaction = None
+    
+    try:
+        # Get a fresh connection from the pool
+        connection = db.engine.connect()
+        
+        # Start a transaction with timeout
+        transaction = connection.begin()
+        
+        # Set connection-level timeout
+        connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}ms'"))
+        
+        # Execute the operation
+        result = operation_func(connection)
+        
+        # Commit transaction
+        transaction.commit()
+        
+        latency = time.time() - start_time
+        return True, result, None, latency
+        
+    except (OperationalError, TimeoutError) as e:
+        latency = time.time() - start_time
+        error_msg = str(e).lower()
+        
+        if transaction:
+            try:
+                transaction.rollback()
+            except Exception:
+                pass
+        
+        if "timeout" in error_msg or "canceling statement" in error_msg:
+            return False, None, "db_timeout_or_pool_exhaustion", latency
+        else:
+            return False, None, "db_connection_error", latency
+            
+    except Exception as e:
+        latency = time.time() - start_time
+        
+        if transaction:
+            try:
+                transaction.rollback()
+            except Exception:
+                pass
+        
+        return False, None, f"db_unexpected_error: {_sanitize_error_message(e)}", latency
+        
+    finally:
+        # Ensure connection is properly returned to pool
+        if connection:
+            try:
+                connection.close()
+            except Exception:
+                current_app.logger.warning("Failed to close database connection")
 
 
 # This function handles the home work for this file.
@@ -410,13 +474,19 @@ def test_fault_db_timeout():
             result=result,
         ), 200
 
-    start = time.time()
+    def db_timeout_operation(connection):
+        """Database operation that will timeout - used for testing timeout handling."""
+        # This intentionally causes a timeout to test the timeout handling mechanism
+        connection.execute(text("SELECT pg_sleep(:sleep_duration)"), {"sleep_duration": 5})
+        return {"message": "Sleep operation completed"}
 
-    try:
-        # Use parameterized queries for security
-        db.session.execute(text("SET LOCAL statement_timeout = :timeout"), {"timeout": "1000ms"})
-        db.session.execute(text("SELECT pg_sleep(:sleep_duration)"), {"sleep_duration": 5})
-        latency = time.time() - start
+    # Use the safe database operation wrapper with proper timeout handling
+    success, operation_result, error_reason, latency = _safe_database_operation(
+        db_timeout_operation, 
+        timeout_seconds=1  # Set timeout to 1 second while trying to sleep for 5 seconds
+    )
+
+    if success:
         result = {
             "status": "ok",
             "error_code": None,
@@ -424,30 +494,17 @@ def test_fault_db_timeout():
             "message": "Database operation completed successfully"
         }
         _resolve_live_incidents(error_code, "/test-fault/db-timeout", latency)
-        
-    except Exception as e:
-        db.session.rollback()
-        latency = time.time() - start
-        
-        # Check if it's a timeout-related error
-        error_str = str(e).lower()
-        if "timeout" in error_str or "canceling statement" in error_str:
-            reason = "db_timeout_or_pool_exhaustion"
-            detail = f"Database operation timed out after {latency:.2f}s"
-        else:
-            reason = "db_error"
-            detail = _sanitize_error_message(e)
-        
+    else:
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": detail,
+            "detail": f"Database operation failed: {error_reason}",
             "latency": f"{latency:.2f}s",
         }
 
         msg = (
             f"{error_code} route=/test-fault/db-timeout "
-            f"reason={reason} latency={latency:.2f}"
+            f"reason={error_reason} latency={latency:.2f}"
         )
         _log_fault_event(msg)
 
@@ -455,11 +512,11 @@ def test_fault_db_timeout():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/db-timeout",
-                reason=reason,
+                reason=error_reason,
                 latency=latency,
             )
-        except Exception:
-            current_app.logger.exception("Failed to create live incident")
+        except Exception as incident_error:
+            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
     return render_template(
         "page/test_fault.html",
