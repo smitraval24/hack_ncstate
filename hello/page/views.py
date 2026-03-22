@@ -4,7 +4,8 @@ import os
 import sys
 from importlib.metadata import version
 
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, request
+import sqlite3
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -42,3 +43,35 @@ def _render_fault(result=None):
 @page.get("/test-fault")
 def test_fault():
     return _render_fault()
+
+
+@page.post("/test-fault/run")
+def test_fault_run():
+    """Handle fault injection test with proper SQL injection protection."""
+    if not ENABLE_FAULT_INJECTION:
+        return _render_fault(result="Fault injection disabled")
+    
+    # Get user input safely
+    user_input = request.form.get("query", "")
+    
+    try:
+        # Use parameterized queries to prevent SQL injection
+        conn = sqlite3.connect(":memory:")  # In-memory database for testing
+        cursor = conn.cursor()
+        
+        # Create a test table
+        cursor.execute("CREATE TABLE test_table (id INTEGER, name TEXT)")
+        cursor.execute("INSERT INTO test_table VALUES (1, 'test_data')")
+        
+        # Use parameterized query instead of string concatenation
+        # This prevents SQL injection by treating user input as data, not code
+        safe_query = "SELECT * FROM test_table WHERE name = ?"
+        cursor.execute(safe_query, (user_input,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        return _render_fault(result=f"Query executed safely. Results: {results}")
+        
+    except Exception as e:
+        return _render_fault(result=f"Error: {str(e)}")
