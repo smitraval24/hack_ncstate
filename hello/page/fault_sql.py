@@ -29,7 +29,7 @@ def test_fault_run():
         db.session.execute(text("SELECT FROM"))
     except Exception as e:
         db.session.rollback()
-        result = {"status": "error", "error_code": error_code, "http_code": 500}
+        result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
@@ -46,13 +46,5 @@ def test_fault_run():
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
-
-    else:
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "detail": "SQL query executed successfully — fault has been healed.",
-            "message": "The self-healing loop fixed the malformed SQL.",
-        }
 
     return _render_fault(result), (500 if result["status"] == "error" else 200)
