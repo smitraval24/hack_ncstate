@@ -27,9 +27,13 @@ def test_fault_db_timeout():
 
     start = time.time()
 
+    # INTENTIONAL BUG: minimum 5s delay to simulate a slow DB timeout.
+    # With a real DB, pg_sleep(10) + statement_timeout='5500ms' takes ~5.5s.
+    # If the DB is unreachable the connection error is instant, so we
+    # enforce a floor so the response always visibly hangs.
+    min_delay = 5.0
+
     try:
-        # INTENTIONAL BUG: pg_sleep(10) with a 5500ms statement timeout
-        # The timeout is shorter than the sleep, so this always fails after ~5.5s
         db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
         db.session.execute(text("SELECT pg_sleep(10);"))
         latency = time.time() - start
@@ -40,6 +44,9 @@ def test_fault_db_timeout():
         }
     except Exception as e:
         db.session.rollback()
+        elapsed = time.time() - start
+        if elapsed < min_delay:
+            time.sleep(min_delay - elapsed)
         latency = time.time() - start
         result = {
             "status": "error",
