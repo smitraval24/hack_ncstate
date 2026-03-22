@@ -2,6 +2,7 @@
 
 This is the ONLY file the self-healing loop may edit when remediating
 this fault code.  The route is registered on the page blueprint.
+
 """
 
 import sys
@@ -29,13 +30,14 @@ def test_fault_db_timeout():
 
     start = time.time()
 
-    # INTENTIONAL BUG: minimum 5s delay to simulate a slow DB timeout.
-    # pg_sleep(10) + statement_timeout='5500ms' guarantees a timeout error.
-    min_delay = 5.0
+    # FIXED: Reduced minimum delay to 0.1s for faster response times
+    # Increased statement timeout to 30s and reduced pg_sleep to 1s to prevent timeouts
+    min_delay = 0.1
 
     try:
-        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
-        db.session.execute(text("SELECT pg_sleep(10);"))
+        db.session.execute(text("SET LOCAL statement_timeout = '30000ms';"))
+        db.session.execute(text("SELECT pg_sleep(1);"))
+        db.session.commit()  # Added proper transaction management
         latency = time.time() - start
         result = {
             "status": "ok",
