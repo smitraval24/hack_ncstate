@@ -2,11 +2,12 @@
 
 import os
 import sys
+import time
+import requests
 from importlib.metadata import version
 
 from flask import Blueprint, render_template, request
 import sqlite3
-import time
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -78,38 +79,75 @@ def test_fault_run():
         return _render_fault(result=f"Error: {str(e)}")
 
 
-@page.get("/test-fault/db-timeout")
-def test_fault_db_timeout():
-    """Handle database timeout fault injection test with proper timeout handling."""
+@page.get("/test-fault/external-api")
+def test_fault_external_api():
+    """Handle external API calls with proper timeout and retry logic."""
     if not ENABLE_FAULT_INJECTION:
         return _render_fault(result="Fault injection disabled")
     
-    try:
-        # Set up database connection with timeout
-        conn = sqlite3.connect(":memory:", timeout=2.0)  # 2 second timeout
-        cursor = conn.cursor()
-        
-        # Create test table
-        cursor.execute("CREATE TABLE timeout_test (id INTEGER, data TEXT)")
-        cursor.execute("INSERT INTO timeout_test VALUES (1, 'test_data')")
-        
-        # Simulate a long-running query that would cause timeout
-        # Instead of actually waiting, return controlled response
-        start_time = time.time()
-        
-        # Execute a simple query quickly to avoid actual timeout
-        cursor.execute("SELECT * FROM timeout_test WHERE id = ?", (1,))
-        results = cursor.fetchall()
-        
-        elapsed_time = time.time() - start_time
-        conn.close()
-        
-        return _render_fault(result=f"DB timeout test completed. Query executed in {elapsed_time:.3f}s. Results: {results}")
-        
-    except sqlite3.OperationalError as e:
-        if "database is locked" in str(e).lower() or "timeout" in str(e).lower():
-            return _render_fault(result=f"Database timeout handled gracefully: {str(e)}")
-        else:
-            return _render_fault(result=f"Database error: {str(e)}")
-    except Exception as e:
-        return _render_fault(result=f"Unexpected error: {str(e)}")
+    start_time = time.time()
+    max_retries = 3
+    timeout_seconds = 5
+    retry_delay = 0.5
+    
+    for attempt in range(max_retries):
+        try:
+            # Make external API call with proper timeout and error handling
+            response = requests.get(
+                "https://httpbin.org/delay/1",  # Test endpoint that introduces delay
+                timeout=timeout_seconds,
+                headers={
+                    'User-Agent': 'cream-app/1.0',
+                    'Accept': 'application/json'
+                }
+            )
+            
+            # Check if response is successful
+            response.raise_for_status()
+            
+            end_time = time.time()
+            latency = end_time - start_time
+            
+            return _render_fault(
+                result=f"External API call successful. Latency: {latency:.3f}s, Status: {response.status_code}"
+            )
+            
+        except requests.exceptions.Timeout:
+            end_time = time.time()
+            latency = end_time - start_time
+            
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                return _render_fault(
+                    result=f"FAULT_EXTERNAL_API_LATENCY: Timeout after {max_retries} attempts. Total latency: {latency:.3f}s"
+                )
+                
+        except requests.exceptions.ConnectionError as e:
+            end_time = time.time()
+            latency = end_time - start_time
+            
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            else:
+                return _render_fault(
+                    result=f"FAULT_EXTERNAL_API_LATENCY: Connection error after {max_retries} attempts. Reason: connection_error, Latency: {latency:.3f}s"
+                )
+                
+        except requests.exceptions.HTTPError as e:
+            end_time = time.time()
+            latency = end_time - start_time
+            
+            return _render_fault(
+                result=f"FAULT_EXTERNAL_API_LATENCY: HTTP error {e.response.status_code}. Latency: {latency:.3f}s"
+            )
+            
+        except requests.exceptions.RequestException as e:
+            end_time = time.time()
+            latency = end_time - start_time
+            
+            return _render_fault(
+                result=f"FAULT_EXTERNAL_API_LATENCY: Request failed - {str(e)}. Latency: {latency:.3f}s"
+            )
