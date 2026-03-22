@@ -284,7 +284,15 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
             inc["status"] = "in_progress"
 
         elif inc.get("status") in ("detected", "in_progress"):
-            # Check immediately: if the app is healthy, the fault is fixed.
+            # If a fix was pushed (auto_fix_pushed), give the CI/CD pipeline
+            # time to deploy before auto-resolving. Otherwise resolve
+            # immediately if the app is healthy.
+            if remediation.get("action_type") == "auto_fix_pushed":
+                exec_ts = remediation.get("execution_timestamp")
+                wait = timedelta(minutes=int(os.getenv("AUTO_RESOLVE_MINUTES", "8")))
+                if not exec_ts or (now - exec_ts) < wait:
+                    continue  # still deploying, let the callback handle it
+
             if health_ok is None:
                 health_ok = _app_health_ok()
 
@@ -793,43 +801,8 @@ def pipeline_callback():
             if result:
                 updated.append(inc["id"])
 
-        if matched:
-            continue
-
-        created = create_live_incident(
-            error_code=fault_code,
-            route=_default_route_for_fault_code(fault_code),
-            reason=f"pipeline_{pipeline_status}",
-        )
-        if pipeline_status == "success":
-            updates = {
-                "status": "resolved",
-                "timestamp_resolved": now,
-                "verification": {
-                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
-                    "latency_after": 0,
-                    "health_check_status": "passed",
-                    "success": True,
-                },
-                "commit_sha": data.get("commit_sha", ""),
-                "run_url": data.get("run_url", ""),
-            }
-        else:
-            updates = {
-                "status": "in_progress",
-                "verification": {
-                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
-                    "latency_after": None,
-                    "health_check_status": "failed",
-                    "success": False,
-                },
-                "commit_sha": data.get("commit_sha", ""),
-                "run_url": data.get("run_url", ""),
-            }
-
-        result = update_live_incident(created["id"], updates)
-        if result:
-            updated.append(created["id"])
+        if not matched:
+            logger.info("No active incident found for fault_code %s, skipping", fault_code)
 
     logger.info(
         "Pipeline callback (%s): updated %s for %s",
