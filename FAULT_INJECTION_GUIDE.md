@@ -87,22 +87,33 @@ def test_fault_run():
 **File:** `hello/page/views.py` → `test_fault_external_api()`
 
 ### What it does
-Calls the mock external API (`http://mock_api:5001/data`) with an extremely low timeout,
-which guarantees a `requests.exceptions.Timeout`.
+Calls the mock external API (`http://mock_api:5001/data`) with a 3-second timeout.
+The mock API (`mock_api.py`) is configured with `API_FAULT_MODE=latency,error` which causes:
+- **60% chance** of a 2-8 second random delay (causes timeout when delay > 3s)
+- **30% chance** of returning HTTP 500 (`{"error": "upstream failure"}`)
+
+Combined, **~70% of requests fail** — either from timeout or upstream HTTP 500.
 
 ### How to replicate
 ```bash
 curl -X POST http://localhost:8000/test-fault/external-api
 ```
 
+Run it multiple times — it's probabilistic, not deterministic.
+
 ### Expected behavior
-1. The request to the mock API times out
-2. The error is caught and logged as:
-   ```
-   FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api reason=external_timeout latency=...
-   ```
-3. A live incident is created with error_code `FAULT_EXTERNAL_API_LATENCY`
-4. Returns HTTP 504
+On **timeout** (~60% of delayed requests exceed 3s):
+1. `requests.exceptions.Timeout` is raised
+2. Logged as: `FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api reason=external_timeout latency=...`
+3. Returns HTTP 504
+
+On **upstream HTTP 500** (~30% chance):
+1. `requests.exceptions.HTTPError` is raised after `raise_for_status()`
+2. Logged as: `FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api reason=upstream_failure latency=...`
+3. Returns HTTP 504
+
+On **success** (~30% of the time):
+1. Returns HTTP 200 with `{"value": 42}`
 
 ### Original correct fault code (commit `41573b1`)
 
@@ -118,7 +129,8 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # INTENTIONAL: low timeout (3s) against a slow mock API — must timeout
+        # INTENTIONAL: 3s timeout against mock API with 60% chance of 2-8s delay
+        # and 30% chance of HTTP 500 — fails ~70% of the time
         r = requests.get("http://mock_api:5001/data", timeout=3)
         latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
@@ -145,6 +157,21 @@ def test_fault_external_api():
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
 
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=upstream_failure latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
         result = {
@@ -163,16 +190,21 @@ def test_fault_external_api():
     return render_template(...), (504 if result["status"] == "error" else 200)
 ```
 
-**Key line:** `requests.get("http://mock_api:5001/data", timeout=3)` — low timeout against slow mock API.
+**Key line:** `requests.get("http://mock_api:5001/data", timeout=3)` — 3s timeout against a mock API that randomly delays 2-8s.
 
-### Configuration
-- `EXTERNAL_API_BASE_TIMEOUT` env var controls the timeout (default: `0.01` seconds in current code)
-- `MOCK_API_BASE_URL` env var controls the target URL (default: `http://mock_api:5001`)
+### Mock API behavior (`mock_api.py`)
+```python
+if "latency" in fault and random.random() < 0.6:
+    time.sleep(random.uniform(2, 8))       # 60% chance of 2-8s delay
+
+if "error" in fault and random.random() < 0.3:
+    return jsonify({"error": "upstream failure"}), 500  # 30% chance of HTTP 500
+```
 
 ### What breaks it (do NOT do this)
-- Increasing the default timeout above 0.01s (e.g., to 10s or 30s)
-- Adding a minimum timeout floor above 0.01s
-- Adding retry logic with exponential backoff that masks the timeout
+- Increasing the timeout to 10s or higher — most delayed requests will succeed instead of timing out
+- Adding retry logic with exponential backoff — masks the failures
+- Removing the `raise_for_status()` call — HTTP 500s won't be caught
 - Removing the `ENABLE_FAULT_INJECTION` check — the fault runs even when injection is disabled
 
 ---
@@ -183,8 +215,12 @@ def test_fault_external_api():
 **File:** `hello/page/views.py` → `test_fault_db_timeout()`
 
 ### What it does
-Sets a PostgreSQL statement timeout of 1 second, then runs `SELECT pg_sleep(5)` which takes 5 seconds.
-The query is cancelled by PostgreSQL after 1 second, raising a timeout error.
+Runs `SELECT pg_sleep(5)` with **no app-level statement timeout**. This causes:
+- The database connection to be blocked for 5+ seconds
+- If a DB-level or pool-level timeout is configured (lower than 5s), the query is cancelled and an error is raised
+- If no timeout is configured, the query completes after 5 seconds — still a problem (5s delay per request)
+
+Either way, this fault produces a **5+ second delay** that degrades the application.
 
 ### How to replicate
 ```bash
@@ -192,15 +228,19 @@ curl -X POST http://localhost:8000/test-fault/db-timeout
 ```
 
 ### Expected behavior
-1. `SET LOCAL statement_timeout = '1000ms'` limits the query to 1 second
-2. `SELECT pg_sleep(5)` attempts to sleep for 5 seconds
-3. PostgreSQL cancels the statement after 1 second
-4. The error is caught and logged as:
+**If DB-level timeout < 5s** (most common):
+1. `SELECT pg_sleep(5)` starts but is cancelled by PostgreSQL's statement timeout
+2. The error is caught and logged as:
    ```
    FAULT_DB_TIMEOUT route=/test-fault/db-timeout reason=db_timeout_or_pool_exhaustion latency=...
    ```
-5. A live incident is created with error_code `FAULT_DB_TIMEOUT`
-6. Returns HTTP 500
+3. A live incident is created with error_code `FAULT_DB_TIMEOUT`
+4. Returns HTTP 500
+
+**If no DB-level timeout** (less common):
+1. `SELECT pg_sleep(5)` completes after 5 seconds
+2. Returns HTTP 200 but with `latency=5.00s` — still indicates a problem
+3. Ties up a database connection for 5 seconds, risking pool exhaustion under load
 
 ### Original correct fault code (commit `41573b1`)
 
@@ -216,9 +256,9 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # INTENTIONAL: pg_sleep(5) with no statement_timeout set at app level
-        # relies on a low DB-level or pool-level timeout to trigger the fault.
-        # Current code adds: SET LOCAL statement_timeout = '1000ms' before this.
+        # INTENTIONAL: pg_sleep(5) with no app-level statement_timeout
+        # Relies on DB-level or pool-level timeout to trigger the fault
+        # Always causes 5+ second delay, often times out
         db.session.execute(text("SELECT pg_sleep(5);"))
         latency = time.time() - start
         result = {
@@ -244,15 +284,13 @@ def test_fault_db_timeout():
     return render_template(...), (500 if result["status"] == "error" else 200)
 ```
 
-**Key line:** `db.session.execute(text("SELECT pg_sleep(5);"))` — sleeps 5s, timeout kills it at 1s.
-
-> **Note:** The original code relied on a DB-level or pool-level timeout. The current code explicitly
-> sets `SET LOCAL statement_timeout = '1000ms'` before the sleep to guarantee the timeout triggers
-> regardless of DB config. Both approaches are valid — the important thing is sleep > timeout.
+**Key line:** `db.session.execute(text("SELECT pg_sleep(5);"))` — blocks for 5 seconds with no app-level timeout protection.
 
 ### What breaks it (do NOT do this)
-- Increasing `statement_timeout` to 30s or higher — the sleep completes and no timeout occurs
-- Decreasing `pg_sleep` to 2s or less — same problem if timeout is raised too
+- Adding `SET LOCAL statement_timeout = '1000ms'` before the sleep — this "fixes" the timeout at app level, defeating the fault
+- Wrapping in a `_safe_database_operation()` helper with timeout — same problem
+- Reducing `pg_sleep` to less than 1 second — the delay becomes negligible
+- Adding retry logic — masks the timeout errors
 - Removing the `ENABLE_FAULT_INJECTION` check — the fault runs even when injection is disabled
 
 ---
@@ -272,7 +310,7 @@ def test_fault_db_timeout():
 
 ### Faults not triggering?
 1. Check `ENABLE_FAULT_INJECTION` is `True` in `config/settings.py`
-2. Check the queries haven't been "fixed" by automated tools — look for `SELECT FROM`, `pg_sleep(5)`, timeout `0.01`
+2. Check the queries haven't been "fixed" by automated tools — look for `SELECT FROM`, `pg_sleep(5)`, timeout `3` (not higher), and no `SET LOCAL statement_timeout` before `pg_sleep`
 3. Check `git log --oneline -10` for commits like "Fix SQL injection" that may have sanitized the faults
 
 ### Incidents not appearing on dashboard?
