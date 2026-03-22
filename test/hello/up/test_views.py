@@ -18,3 +18,15 @@ class TestUp(ViewTestMixin):
         response = self.client.get(url_for("up.databases"))
 
         assert response.status_code == 200
+
+    def test_up_build(self, monkeypatch):
+        """Up build should expose the running build SHA."""
+        monkeypatch.setenv("BUILD_SHA", "abcdef123456")
+
+        response = self.client.get(url_for("up.build"))
+
+        assert response.status_code == 200
+        assert response.get_json() == {
+            "build_sha": "abcdef123456",
+            "build_short_sha": "abcdef1",
+        }

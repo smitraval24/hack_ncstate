@@ -92,9 +92,29 @@ jobs:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: true
+        wait-for-service-stability: false
 
-    # Notify dashboard only after ECS reports the new task set is stable.
+    - name: Wait for live app to serve the new build
+      env:
+        DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+        EXPECTED_SHA: ${{ github.sha }}
+      run: |
+        APP_BASE="${DASHBOARD_URL%/}"
+        BUILD_URL="$APP_BASE/up/build"
+        for attempt in $(seq 1 45); do
+          RESPONSE=$(curl -fsS "$BUILD_URL" || true)
+          LIVE_SHA=$(printf '%s' "$RESPONSE" | jq -r '.build_sha // empty' 2>/dev/null || true)
+          if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
+            echo "Live app is serving build $LIVE_SHA"
+            exit 0
+          fi
+          echo "Waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/45, saw '${LIVE_SHA:-none}')"
+          sleep 5
+        done
+        echo "Timed out waiting for the live app to serve build $EXPECTED_SHA"
+        exit 1
+
+    # Notify dashboard only after the live app serves the new build SHA.
     - name: Notify dashboard - deploy success
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}

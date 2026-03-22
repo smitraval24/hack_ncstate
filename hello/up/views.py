@@ -1,6 +1,8 @@
 """This file handles the views logic for the up part of the project."""
 
-from flask import Blueprint
+import os
+
+from flask import Blueprint, jsonify
 from sqlalchemy import text
 
 from hello.extensions import db
@@ -21,3 +23,15 @@ def databases():
     with db.engine.connect() as connection:
         connection.execute(text("SELECT 1"))
     return ""
+
+
+# This function handles the build metadata work for this file.
+@up.get("/build")
+def build():
+    build_sha = os.getenv("BUILD_SHA", "").strip()
+    return jsonify(
+        {
+            "build_sha": build_sha,
+            "build_short_sha": build_sha[:7] if build_sha else "local",
+        }
+    )
