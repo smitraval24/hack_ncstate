@@ -1,6 +1,6 @@
 """This file handles the fault router lambda function logic for the hack ncstate part of the project."""
 
-import os, json, base64, gzip, urllib.request, urllib.parse, re
+import os, json, base64, gzip, urllib.request, urllib.parse, re, time
 from datetime import datetime, timezone
 import boto3
 
@@ -235,6 +235,25 @@ Steps you MUST follow:
         # Feed tool results back to Claude
         messages.append({"role": "user", "content": tool_results})
 
+FAULT_COOLDOWN_SECONDS = 600  # 10-minute cooldown per fault code
+
+def _check_and_set_cooldown(fault_code: str) -> bool:
+    """Return True if this fault was already processed recently (skip it)."""
+    ssm = boto3.client("ssm")
+    param_name = f"/cream/fault-cooldown/{fault_code}"
+    try:
+        resp = ssm.get_parameter(Name=param_name)
+        last_ts = float(resp["Parameter"]["Value"])
+        if time.time() - last_ts < FAULT_COOLDOWN_SECONDS:
+            return True
+    except ssm.exceptions.ParameterNotFound:
+        pass
+    except Exception as e:
+        print(f"SSM_READ_ERROR: {e}")
+    ssm.put_parameter(Name=param_name, Value=str(time.time()), Type="String", Overwrite=True)
+    return False
+
+
 # This function handles the lambda handler work for this file.
 def lambda_handler(event, context):
     cw = decode_cw_payload(event)
@@ -253,6 +272,10 @@ def lambda_handler(event, context):
             print(f"SKIP duplicate incident in batch: {dedupe_key}")
             continue
         processed_incidents.add(dedupe_key)
+
+        if _check_and_set_cooldown(inc["fault_code"]):
+            print(f"SKIP cooldown active for {inc['fault_code']} (within {FAULT_COOLDOWN_SECONDS}s)")
+            continue
 
         try:
             # 1️⃣ Send incident to Backboard thread → get RAG analysis
