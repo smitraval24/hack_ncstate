@@ -2,6 +2,7 @@
 
 This is the ONLY file the self-healing loop may edit when remediating
 this fault code.  The route is registered on the page blueprint.
+
 """
 
 import os
@@ -96,6 +97,8 @@ def test_fault_external_api():
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
+        return _render_fault(result), 504
+
     except requests.exceptions.HTTPError:
         latency = time.time() - start
         result = {
@@ -116,6 +119,8 @@ def test_fault_external_api():
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
+        return _render_fault(result), 504
+
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
         result = {
@@ -135,5 +140,7 @@ def test_fault_external_api():
             _record_external_api_incident("connection_error", latency)
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
+
+        return _render_fault(result), 504
 
     return _render_fault(result), (504 if result["status"] == "error" else 200)
