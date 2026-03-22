@@ -59,15 +59,17 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
-        db.session.execute(text("SELECT FROM"))
+        # FIXED: Use a safe, valid SQL query instead of malformed SQL
+        # This query safely selects a constant value to test database connectivity
+        db.session.execute(text("SELECT 1 as test_value"))
+        db.session.commit()
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed"
+            f"reason=database_connection_test_failed"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -76,7 +78,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="invalid_sql_executed",
+                reason="database_connection_test_failed",
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
