@@ -144,7 +144,7 @@ def test_fault_run():
         ), 200
 
     try:
-        db.session.execute(text("SELECT 1 AS test_column"))
+        db.session.execute(text("SELECT FROM"))
         _resolve_live_incidents(error_code, "/test-fault/run")
     except Exception as e:
         db.session.rollback()
@@ -370,26 +370,14 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # Configure timeout based on environment variable with safe defaults
-        timeout_ms = int(os.environ.get("DB_TIMEOUT_MS", "2000"))  # Default 2 seconds
-        sleep_duration = float(os.environ.get("DB_SLEEP_DURATION", "0.5"))  # Default 0.5 seconds
-        
-        # Validate and clamp values to prevent abuse
-        timeout_ms = max(min(timeout_ms, 10000), 500)  # Between 0.5s and 10s
-        sleep_duration = max(min(sleep_duration, 5.0), 0.1)  # Between 0.1s and 5s
-        
-        # Set statement timeout
-        db.session.execute(text(f"SET LOCAL statement_timeout = '{timeout_ms}ms'"))
-        
-        # Use a sleep duration that should complete within the timeout
-        db.session.execute(text(f"SELECT pg_sleep({sleep_duration})"))
-        
+        db.session.execute(text("SET LOCAL statement_timeout = '1000ms'"))
+        db.session.execute(text("SELECT pg_sleep(5)"))
         latency = time.time() - start
         result = {
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "message": f"Database operation completed successfully (timeout={timeout_ms}ms, sleep={sleep_duration}s)"
+            "message": "Database operation completed successfully"
         }
         _resolve_live_incidents(error_code, "/test-fault/db-timeout", latency)
         
