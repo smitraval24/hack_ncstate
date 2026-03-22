@@ -334,7 +334,6 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0001"
 
     @patch("hello.developer.views._reset_faulty_code")
-    @patch("hello.developer.views._pause_self_healing")
     @patch("hello.developer.views._record_demo_reset")
     @patch("hello.developer.views.reset_live_incidents")
     @patch("hello.developer.views.get_live_incidents")
@@ -343,7 +342,6 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         mock_get_live_incidents,
         mock_reset_live_incidents,
         mock_record_demo_reset,
-        mock_pause_self_healing,
         mock_reset_faulty_code,
     ):
         mock_get_live_incidents.return_value = [
@@ -375,7 +373,6 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             "FAULT_DB_TIMEOUT",
         ]
         mock_reset_faulty_code.assert_called_once_with(["FAULT_SQL_INJECTION_TEST"])
-        mock_pause_self_healing.assert_called_once()
         mock_record_demo_reset.assert_called_once()
 
     @patch("hello.developer.views.update_live_incident")

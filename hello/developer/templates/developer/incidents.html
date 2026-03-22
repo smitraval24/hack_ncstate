@@ -217,23 +217,6 @@
       background: rgba(255, 119, 146, 0.2);
     }
 
-    .hero-arm-healing {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 46px;
-      padding: 0 18px;
-      border-radius: 999px;
-      border: 1px solid rgba(17, 210, 189, 0.28);
-      background: rgba(17, 210, 189, 0.12);
-      color: #a8f0e4;
-      font-weight: 700;
-    }
-
-    .hero-arm-healing:hover {
-      transform: translateY(-2px);
-      background: rgba(17, 210, 189, 0.2);
-    }
 
     .hero-posture {
       position: relative;
@@ -666,7 +649,6 @@
             </span>
             {% if data_source in ('live', 'live+cloudwatch') %}
               <button onclick="resetIncidents()" class="hero-reset">Reset All</button>
-              <button onclick="armHealing()" class="hero-arm-healing">Arm Self-Healing</button>
             {% endif %}
           </div>
         </div>
@@ -1176,18 +1158,5 @@
         .catch((err) => alert('Reset failed: ' + err.message));
     }
 
-    function armHealing() {
-      if (!confirm('Arm self-healing?\nAfter you confirm the error, trigger only the fault you want the Lambda to remediate next.')) return;
-      fetch('/developer/incidents/arm-healing', { method: 'POST' })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.success) {
-            alert('Self-healing armed. Trigger the fault you want to remediate now.');
-          } else {
-            alert('Failed: ' + (data.error || 'Unknown error'));
-          }
-        })
-        .catch((err) => alert('Failed: ' + err.message));
-    }
   </script>
 {% endblock %}

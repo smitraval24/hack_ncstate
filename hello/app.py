@@ -155,6 +155,14 @@ def extensions(app):
     db.init_app(app)
     flask_static_digest.init_app(app)
 
+    # Create all DB tables on startup so the app works even when Postgres
+    # has ephemeral storage (no EFS) and restarts with an empty database.
+    with app.app_context():
+        try:
+            db.create_all()
+        except Exception:
+            app.logger.warning("Could not create database tables at startup", exc_info=True)
+
     return None
 
 

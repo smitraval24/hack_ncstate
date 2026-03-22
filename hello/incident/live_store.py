@@ -19,19 +19,17 @@ from hello.incident.models import LiveIncident
 
 logger = logging.getLogger(__name__)
 
-_table_checked = False
-
 
 def _ensure_table() -> None:
-    """Create the live_incidents table if it doesn't exist yet."""
-    global _table_checked
-    if _table_checked:
-        return
+    """Create the live_incidents table if it doesn't exist yet.
+
+    Always checks because Postgres may have restarted with ephemeral
+    storage (no EFS), wiping all tables.
+    """
     try:
         if not inspect(db.engine).has_table("live_incidents"):
             LiveIncident.__table__.create(db.engine)
             logger.info("Created live_incidents table")
-        _table_checked = True
     except Exception:
         logger.warning("Could not verify/create live_incidents table", exc_info=True)
 
@@ -192,8 +190,10 @@ def create_incident(
         db.session.rollback()
         logger.exception("Failed to create live incident for %s – retrying with fresh session", error_code)
 
-        # Retry once with a fully clean session
+        # Retry once with a fully clean session and re-ensure the table
+        # exists (Postgres may have restarted with ephemeral storage).
         db.session.remove()
+        _ensure_table()
         incident_id = _next_incident_id()
         incident = _build_incident(incident_id, error_code, route, reason, latency)
 
