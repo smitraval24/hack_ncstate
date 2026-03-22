@@ -1163,7 +1163,7 @@
     setInterval(updateDashboard, REFRESH_INTERVAL);
 
     function resetIncidents() {
-      if (!confirm('Reset all incidents and restore faulty code?\nSelf-healing will be paused until you click "Arm Self-Healing".')) return;
+      if (!confirm('Reset all incidents, clear earlier metrics, and restore only the faults that auto-healing already fixed?\nSelf-healing will stay paused until you click "Arm Self-Healing".')) return;
       fetch('/developer/incidents/reset', { method: 'POST' })
         .then((res) => res.json())
         .then((data) => {
@@ -1177,12 +1177,12 @@
     }
 
     function armHealing() {
-      if (!confirm('Arm self-healing?\nThe next fault you trigger will be picked up by the Lambda and auto-remediated.')) return;
+      if (!confirm('Arm self-healing?\nAfter you confirm the error, trigger only the fault you want the Lambda to remediate next.')) return;
       fetch('/developer/incidents/arm-healing', { method: 'POST' })
         .then((res) => res.json())
         .then((data) => {
           if (data.success) {
-            alert('Self-healing armed! Trigger a fault now.');
+            alert('Self-healing armed. Trigger the fault you want to remediate now.');
           } else {
             alert('Failed: ' + (data.error || 'Unknown error'));
           }

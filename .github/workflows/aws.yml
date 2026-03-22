@@ -100,12 +100,11 @@ jobs:
       run: |
         FAULT_CODES='${{ steps.faults.outputs.fault_codes }}'
         if [ "$FAULT_CODES" = "[]" ] || [ -z "$FAULT_CODES" ]; then
-          ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/resolve-all"
-          BODY="{\"status\":\"success\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-        else
-          ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/callback"
-          BODY="{\"fault_codes\":$FAULT_CODES,\"status\":\"success\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
+          echo "No fault-tagged remediation commit detected; skipping dashboard callback."
+          exit 0
         fi
+        ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/callback"
+        BODY="{\"fault_codes\":$FAULT_CODES,\"status\":\"success\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
         curl -s -o /dev/null -w "HTTP %{http_code}" -X POST "$ENDPOINT" \
           -H "Content-Type: application/json" -d "$BODY" || true
 

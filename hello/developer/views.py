@@ -1,5 +1,6 @@
 """This file handles the views logic for the developer part of the project."""
 
+import ast
 import base64
 import json
 import logging
@@ -30,6 +31,22 @@ logger = logging.getLogger(__name__)
 
 # This blueprint groups related routes for this part of the app.
 developer = Blueprint("developer", __name__, template_folder="templates")
+
+FAULT_FUNCTION_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "test_fault_run",
+    "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
+    "FAULT_DB_TIMEOUT": "test_fault_db_timeout",
+}
+
+FAULT_ROUTE_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "/test-fault/run",
+    "FAULT_EXTERNAL_API_LATENCY": "/test-fault/external-api",
+    "FAULT_DB_TIMEOUT": "/test-fault/db-timeout",
+}
+
+AUTO_HEAL_ACTION_TYPES = {"auto_fix_pushed"}
+DEMO_RESET_TIMESTAMP_PARAM = "/cream/demo-reset-timestamp"
+_demo_reset_timestamp: datetime | None = None
 
 
 
@@ -226,6 +243,227 @@ def build_dashboard_aggregates(incidents: list[dict]) -> dict:
     }
 
 
+def get_mock_incidents() -> list[dict]:
+    """Return fallback demo incidents for local dashboard rendering/tests."""
+    now = datetime.now().replace(microsecond=0)
+    return [
+        {
+            "id": "MOCK-0001",
+            "timestamp_opened": now - timedelta(minutes=42),
+            "timestamp_resolved": now - timedelta(minutes=18),
+            "incident_type": "External API Timeout",
+            "severity": "critical",
+            "status": "resolved",
+            "route": "/test-fault/external-api",
+            "error_code": "FAULT_EXTERNAL_API_LATENCY",
+            "symptoms": {
+                "latency_p95": "8.20s",
+                "latency_p95_value": 8.2,
+                "endpoint": "/test-fault/external-api",
+                "log_marker": "external_timeout",
+                "affected_requests": 120,
+            },
+            "breadcrumbs": {
+                "recent_logs": [
+                    "2026-03-22 07:00:12 ERROR FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api reason=external_timeout latency=8.20",
+                ],
+                "metric_snapshot": {
+                    "failed_requests": 120,
+                    "avg_latency": "8.20s",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                "correlated_events": ["Fault detected on external API route"],
+            },
+            "root_cause": {
+                "source": "rag",
+                "confidence_score": 0.93,
+                "explanation": "The outbound timeout was too short for the upstream latency profile.",
+            },
+            "remediation": {
+                "action_type": "auto_fix_pushed",
+                "parameters": {"claude_output": "Raised timeout and retry budget."},
+                "execution_timestamp": now - timedelta(minutes=24),
+            },
+            "verification": {
+                "latency_before": 8.2,
+                "latency_after": 0.9,
+                "health_check_status": "passed",
+                "success": True,
+            },
+            "commit_sha": "abc123def456",
+            "run_url": "https://example.com/run/1",
+        },
+        {
+            "id": "MOCK-0002",
+            "timestamp_opened": now - timedelta(hours=2, minutes=10),
+            "timestamp_resolved": None,
+            "incident_type": "Database Timeout",
+            "severity": "critical",
+            "status": "in_progress",
+            "route": "/test-fault/db-timeout",
+            "error_code": "FAULT_DB_TIMEOUT",
+            "symptoms": {
+                "latency_p95": "5.00s",
+                "latency_p95_value": 5.0,
+                "endpoint": "/test-fault/db-timeout",
+                "log_marker": "db_timeout_or_pool_exhaustion",
+                "affected_requests": 85,
+            },
+            "breadcrumbs": {
+                "recent_logs": ["Database timeout observed while running pg_sleep demo fault."],
+                "metric_snapshot": {
+                    "failed_requests": 85,
+                    "avg_latency": "5.00s",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                "correlated_events": ["Connection pool saturation"],
+            },
+            "root_cause": {
+                "source": "rag",
+                "confidence_score": 0.87,
+                "explanation": "The query execution window is shorter than the simulated sleep.",
+            },
+            "remediation": {
+                "action_type": "auto_fix_pushed",
+                "parameters": {"claude_output": "Adjusted timeout handling."},
+                "execution_timestamp": now - timedelta(hours=2),
+            },
+            "verification": {
+                "latency_before": 5.0,
+                "latency_after": None,
+                "health_check_status": "pending",
+                "success": None,
+            },
+        },
+        {
+            "id": "MOCK-0003",
+            "timestamp_opened": now - timedelta(hours=5),
+            "timestamp_resolved": now - timedelta(hours=4, minutes=20),
+            "incident_type": "SQL Injection Error",
+            "severity": "high",
+            "status": "resolved",
+            "route": "/test-fault/run",
+            "error_code": "FAULT_SQL_INJECTION_TEST",
+            "symptoms": {
+                "latency_p95": "0.60s",
+                "latency_p95_value": 0.6,
+                "endpoint": "/test-fault/run",
+                "log_marker": "invalid_sql_executed",
+                "affected_requests": 62,
+            },
+            "breadcrumbs": {
+                "recent_logs": ["Malformed SQL executed in test fault route."],
+                "metric_snapshot": {
+                    "failed_requests": 62,
+                    "avg_latency": "0.60s",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                "correlated_events": ["SQL parser failure"],
+            },
+            "root_cause": {
+                "source": "rag",
+                "confidence_score": 0.89,
+                "explanation": "The demo route executed malformed SQL instead of a safe query.",
+            },
+            "remediation": {
+                "action_type": "manual_patch",
+                "parameters": {"summary": "Corrected malformed SQL."},
+                "execution_timestamp": now - timedelta(hours=4, minutes=35),
+            },
+            "verification": {
+                "latency_before": 0.6,
+                "latency_after": 0.1,
+                "health_check_status": "passed",
+                "success": True,
+            },
+        },
+        {
+            "id": "MOCK-0004",
+            "timestamp_opened": now - timedelta(days=1, hours=1),
+            "timestamp_resolved": now - timedelta(days=1),
+            "incident_type": "Cache Stampede",
+            "severity": "high",
+            "status": "resolved",
+            "route": "/cache/rebuild",
+            "error_code": "CACHE_STAMPEDE",
+            "symptoms": {
+                "latency_p95": "1.80s",
+                "latency_p95_value": 1.8,
+                "endpoint": "/cache/rebuild",
+                "log_marker": "cache_regeneration_spike",
+                "affected_requests": 34,
+            },
+            "breadcrumbs": {
+                "recent_logs": ["Cache regeneration spike detected."],
+                "metric_snapshot": {
+                    "failed_requests": 34,
+                    "avg_latency": "1.80s",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                "correlated_events": ["Redis miss burst"],
+            },
+            "root_cause": {
+                "source": "manual",
+                "confidence_score": 0.71,
+                "explanation": "A missing warmup caused concurrent cache regeneration.",
+            },
+            "remediation": {
+                "action_type": "manual_patch",
+                "parameters": {"summary": "Added request coalescing."},
+                "execution_timestamp": now - timedelta(days=1, minutes=20),
+            },
+            "verification": {
+                "latency_before": 1.8,
+                "latency_after": 0.4,
+                "health_check_status": "passed",
+                "success": True,
+            },
+        },
+        {
+            "id": "MOCK-0005",
+            "timestamp_opened": now - timedelta(days=2, hours=3),
+            "timestamp_resolved": None,
+            "incident_type": "Background Queue Drift",
+            "severity": "medium",
+            "status": "detected",
+            "route": "/jobs/sync",
+            "error_code": "QUEUE_DRIFT",
+            "symptoms": {
+                "latency_p95": "2.40s",
+                "latency_p95_value": 2.4,
+                "endpoint": "/jobs/sync",
+                "log_marker": "consumer_lag",
+                "affected_requests": 20,
+            },
+            "breadcrumbs": {
+                "recent_logs": ["Queue consumer lag crossed the demo threshold."],
+                "metric_snapshot": {
+                    "failed_requests": 20,
+                    "avg_latency": "2.40s",
+                    "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                "correlated_events": ["Lag spike on worker queue"],
+            },
+            "root_cause": {
+                "source": None,
+                "confidence_score": None,
+                "explanation": None,
+            },
+            "remediation": {
+                "action_type": None,
+                "parameters": None,
+                "execution_timestamp": None,
+            },
+            "verification": {
+                "latency_before": None,
+                "latency_after": None,
+                "health_check_status": None,
+                "success": None,
+            },
+        },
+    ]
+
+
 def _incident_failure_summary(incident: dict) -> str:
     """Summarize what broke using existing incident fields only."""
     symptoms = incident.get("symptoms") or {}
@@ -402,6 +640,210 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
     return merged
 
 
+def _is_parameter_not_found(exc: Exception) -> bool:
+    """Return True when boto3 surfaced an SSM ParameterNotFound error."""
+    response = getattr(exc, "response", {}) or {}
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    return error.get("Code") == "ParameterNotFound"
+
+
+def _get_demo_reset_timestamp() -> datetime | None:
+    """Return the most recent demo reset timestamp, if one was recorded."""
+    global _demo_reset_timestamp
+
+    try:
+        import boto3
+
+        ssm = boto3.client("ssm")
+        response = ssm.get_parameter(Name=DEMO_RESET_TIMESTAMP_PARAM)
+        value = response["Parameter"]["Value"]
+        _demo_reset_timestamp = datetime.fromisoformat(value)
+    except Exception as exc:
+        if not _is_parameter_not_found(exc):
+            logger.debug("Could not read demo reset timestamp: %s", exc)
+
+    return _demo_reset_timestamp
+
+
+def _record_demo_reset(timestamp: datetime) -> None:
+    """Persist the latest demo reset timestamp for dashboard filtering."""
+    global _demo_reset_timestamp
+    _demo_reset_timestamp = timestamp
+
+    try:
+        import boto3
+
+        boto3.client("ssm").put_parameter(
+            Name=DEMO_RESET_TIMESTAMP_PARAM,
+            Value=timestamp.isoformat(),
+            Type="String",
+            Overwrite=True,
+        )
+    except Exception as exc:
+        logger.warning("Could not store demo reset timestamp: %s", exc)
+
+
+def _filter_incidents_after_demo_reset(incidents: list[dict]) -> list[dict]:
+    """Hide incidents that predate the latest Reset All action."""
+    cutoff = _get_demo_reset_timestamp()
+    if not cutoff:
+        return incidents
+
+    filtered = []
+    for incident in incidents:
+        opened_at = incident.get("timestamp_opened")
+        if opened_at and opened_at < cutoff:
+            continue
+        filtered.append(incident)
+
+    return filtered
+
+
+def _collect_resettable_fault_codes(incidents: list[dict]) -> list[str]:
+    """Return fault codes that were actually auto-healed and should be reverted."""
+    resettable = set()
+
+    for incident in incidents:
+        fault_code = incident.get("error_code")
+        remediation = incident.get("remediation") or {}
+        verification = incident.get("verification") or {}
+
+        if fault_code not in FAULT_FUNCTION_MAP:
+            continue
+        if incident.get("status") != "resolved":
+            continue
+        if remediation.get("action_type") not in AUTO_HEAL_ACTION_TYPES:
+            continue
+        if verification.get("success") is False:
+            continue
+
+        resettable.add(fault_code)
+
+    return sorted(resettable)
+
+
+def _function_source_block(source: str, function_name: str) -> tuple[int, int, str]:
+    """Return the byte range and source block for a top-level function."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name != function_name:
+            continue
+
+        start_line = min(
+            (decorator.lineno for decorator in node.decorator_list),
+            default=node.lineno,
+        )
+        end_line = node.end_lineno
+        if end_line is None:
+            raise ValueError(f"Could not determine end of function {function_name}")
+
+        start_idx = sum(len(line) for line in lines[: start_line - 1])
+        end_idx = sum(len(line) for line in lines[:end_line])
+        block = "".join(lines[start_line - 1 : end_line])
+        return start_idx, end_idx, block
+
+    raise ValueError(f"Function {function_name} not found")
+
+
+def _restore_faulty_functions(current_source: str, fault_codes: list[str]) -> str:
+    """Restore only the selected fault handlers back to their faulty template."""
+    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
+
+    updated_source = current_source
+    replacements = []
+
+    for fault_code in sorted(set(fault_codes)):
+        function_name = FAULT_FUNCTION_MAP.get(fault_code)
+        if not function_name:
+            continue
+
+        start_idx, end_idx, _ = _function_source_block(updated_source, function_name)
+        _, _, faulty_block = _function_source_block(FAULTY_VIEWS_CONTENT, function_name)
+        replacements.append((start_idx, end_idx, faulty_block))
+
+    for start_idx, end_idx, faulty_block in sorted(replacements, reverse=True):
+        updated_source = (
+            updated_source[:start_idx] + faulty_block + updated_source[end_idx:]
+        )
+
+    return updated_source
+
+
+def _invoke_github_lambda(function_name: str, parameters: list[dict]) -> dict:
+    """Invoke the GitHub helper Lambda and unwrap its response body."""
+    from config.settings import GITHUB_LAMBDA_NAME
+
+    if not GITHUB_LAMBDA_NAME:
+        raise RuntimeError("GITHUB_LAMBDA_NAME is not configured")
+
+    import boto3
+
+    payload = {
+        "actionGroup": "GitHubActions",
+        "function": function_name,
+        "parameters": parameters,
+    }
+    response = boto3.client("lambda").invoke(
+        FunctionName=GITHUB_LAMBDA_NAME,
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    result = json.loads(response["Payload"].read())
+    return json.loads(
+        result.get("response", {})
+        .get("functionResponse", {})
+        .get("responseBody", {})
+        .get("TEXT", {})
+        .get("body", "{}")
+    )
+
+
+def _read_github_file_content(file_path: str) -> tuple[str, str]:
+    """Read the current GitHub version of a file for selective reset logic."""
+    from config.settings import (
+        GITHUB_BRANCH,
+        GITHUB_LAMBDA_NAME,
+        GITHUB_OWNER,
+        GITHUB_REPO,
+        GITHUB_TOKEN,
+    )
+
+    if GITHUB_LAMBDA_NAME:
+        try:
+            body = _invoke_github_lambda(
+                "read_github_file",
+                [{"name": "file_path", "value": file_path}],
+            )
+            if body.get("ok"):
+                return body["content"], "lambda"
+            logger.warning("GitHub Lambda read failed: %s", body.get("error", "unknown error"))
+        except Exception as exc:
+            logger.warning("GitHub Lambda read failed, trying GitHub API: %s", exc)
+
+    if GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO:
+        api_url = (
+            f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
+        )
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+        }
+        response = http_requests.get(
+            f"{api_url}?ref={GITHUB_BRANCH}",
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        content = base64.b64decode(payload["content"]).decode("utf-8")
+        return content, "github_api"
+
+    raise RuntimeError("No GitHub credentials configured")
+
+
 # This function handles the fetch incidents work for this file.
 def _fetch_incidents() -> tuple[list[dict], str, str | None]:
     """Fetch incidents from live store + CloudWatch (merged), or mock data.
@@ -436,6 +878,7 @@ def _fetch_incidents() -> tuple[list[dict], str, str | None]:
         incidents, source = [], "none"
 
     incidents = _sync_status(incidents)
+    incidents = _filter_incidents_after_demo_reset(incidents)
     return incidents, source, cw_error
 
 
@@ -530,12 +973,7 @@ def _get_incident_by_id(incident_id: str) -> dict | None:
 
 
 def _default_route_for_fault_code(fault_code: str) -> str:
-    route_map = {
-        "FAULT_SQL_INJECTION_TEST": "/test-fault/run",
-        "FAULT_EXTERNAL_API_LATENCY": "/test-fault/external-api",
-        "FAULT_DB_TIMEOUT": "/test-fault/db-timeout",
-    }
-    return route_map.get(fault_code, "/test-fault")
+    return FAULT_ROUTE_MAP.get(fault_code, "/test-fault")
 
 
 # This function handles the incident to document work for this file.
@@ -655,21 +1093,28 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear all live incidents, pause self-healing, and restore faulty code."""
+    """Clear demo state and restore only the faults auto-healing previously fixed."""
     try:
+        existing_incidents = get_live_incidents()
+        resettable_fault_codes = _collect_resettable_fault_codes(existing_incidents)
+
         count = reset_live_incidents()
+        reset_at = datetime.now()
+        _record_demo_reset(reset_at)
 
         # Pause self-healing so the Lambda doesn't immediately "fix" the
         # faulty code before the user can demo the errors.
         _pause_self_healing()
 
-        # Push the original faulty views.py back to GitHub so faults are
-        # restored after the next CI/CD deploy.
-        code_reset_result = _reset_faulty_code()
+        # Restore only the fault handlers that the self-healing loop already
+        # fixed. Faults that were never triggered stay untouched.
+        code_reset_result = _reset_faulty_code(resettable_fault_codes)
 
         return jsonify({
             "success": True,
             "deleted": count,
+            "restored_fault_codes": resettable_fault_codes,
+            "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
             "self_healing": "paused (use /developer/incidents/arm-healing to enable)",
         })
@@ -690,7 +1135,7 @@ def arm_self_healing():
         _arm_self_healing()
         return jsonify({
             "success": True,
-            "message": "Self-healing armed. Trigger a fault now — the Lambda will process it.",
+            "message": "Self-healing armed. Trigger only the fault you want the Lambda to remediate next.",
         })
     except Exception as e:
         logger.exception("Failed to arm self-healing")
@@ -745,49 +1190,70 @@ def _arm_self_healing():
         logger.warning("Could not arm self-healing: %s", e)
 
 
-def _reset_faulty_code() -> dict:
-    """Push the original faulty views.py back to GitHub.
-
-    Tries the GithubTool Lambda first (if GITHUB_LAMBDA_NAME is set),
-    then falls back to the GitHub API directly (if GITHUB_TOKEN is set).
-    """
-    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
+def _reset_faulty_code(fault_codes: list[str]) -> dict:
+    """Push only the selected faulty handlers back to GitHub."""
     from config.settings import (
-        GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH,
         GITHUB_LAMBDA_NAME,
+        GITHUB_BRANCH,
+        GITHUB_OWNER,
+        GITHUB_REPO,
+        GITHUB_TOKEN,
     )
 
     file_path = "hello/page/views.py"
-    commit_message = "[RESET] Restore faulty views.py for demo cycle"
+    resettable_fault_codes = [
+        fault_code for fault_code in fault_codes if fault_code in FAULT_FUNCTION_MAP
+    ]
+
+    if not resettable_fault_codes:
+        logger.info("Reset skipped: no auto-healed faults to restore")
+        return {
+            "method": "none",
+            "success": True,
+            "skipped": True,
+            "fault_codes": [],
+            "message": "No auto-healed faults needed to be restored.",
+        }
+
+    try:
+        current_content, read_method = _read_github_file_content(file_path)
+        reset_content = _restore_faulty_functions(
+            current_content,
+            resettable_fault_codes,
+        )
+    except Exception as exc:
+        logger.warning("Could not prepare selective fault reset: %s", exc)
+        return {
+            "method": "prepare",
+            "success": False,
+            "fault_codes": resettable_fault_codes,
+            "error": str(exc),
+        }
+
+    commit_message = (
+        "[RESET] Restore faulty demo handlers for "
+        + ", ".join(resettable_fault_codes)
+    )
 
     # Method 1: Invoke GithubTool Lambda
     if GITHUB_LAMBDA_NAME:
         try:
-            import boto3
-            lambda_client = boto3.client("lambda")
-            payload = {
-                "actionGroup": "GitHubActions",
-                "function": "push_github_fix",
-                "parameters": [
+            body = _invoke_github_lambda(
+                "push_github_fix",
+                [
                     {"name": "file_path", "value": file_path},
-                    {"name": "file_content", "value": FAULTY_VIEWS_CONTENT},
+                    {"name": "file_content", "value": reset_content},
                     {"name": "commit_message", "value": commit_message},
                 ],
-            }
-            resp = lambda_client.invoke(
-                FunctionName=GITHUB_LAMBDA_NAME,
-                Payload=json.dumps(payload).encode("utf-8"),
-            )
-            result = json.loads(resp["Payload"].read())
-            body = json.loads(
-                result.get("response", {})
-                .get("functionResponse", {})
-                .get("responseBody", {})
-                .get("TEXT", {})
-                .get("body", "{}")
             )
             logger.info("Reset faulty code via Lambda: %s", body)
-            return {"method": "lambda", "success": body.get("ok", False), "detail": body}
+            return {
+                "method": "lambda",
+                "success": body.get("ok", False),
+                "fault_codes": resettable_fault_codes,
+                "read_method": read_method,
+                "detail": body,
+            }
         except Exception as e:
             logger.warning("Lambda reset failed, trying GitHub API: %s", e)
 
@@ -810,8 +1276,8 @@ def _reset_faulty_code() -> dict:
             get_resp.raise_for_status()
             file_sha = get_resp.json()["sha"]
 
-            # Push faulty content
-            content_b64 = base64.b64encode(FAULTY_VIEWS_CONTENT.encode("utf-8")).decode("utf-8")
+            # Push selectively restored content
+            content_b64 = base64.b64encode(reset_content.encode("utf-8")).decode("utf-8")
             put_resp = http_requests.put(
                 api_url,
                 headers=headers,
@@ -826,13 +1292,31 @@ def _reset_faulty_code() -> dict:
             put_resp.raise_for_status()
             commit_sha = put_resp.json().get("commit", {}).get("sha", "")
             logger.info("Reset faulty code via GitHub API: %s", commit_sha)
-            return {"method": "github_api", "success": True, "commit_sha": commit_sha}
+            return {
+                "method": "github_api",
+                "success": True,
+                "fault_codes": resettable_fault_codes,
+                "read_method": read_method,
+                "commit_sha": commit_sha,
+            }
         except Exception as e:
             logger.warning("GitHub API reset failed: %s", e)
-            return {"method": "github_api", "success": False, "error": str(e)}
+            return {
+                "method": "github_api",
+                "success": False,
+                "fault_codes": resettable_fault_codes,
+                "read_method": read_method,
+                "error": str(e),
+            }
 
     logger.info("No GitHub credentials configured — skipped code reset")
-    return {"method": "none", "success": False, "error": "No GITHUB_LAMBDA_NAME or GITHUB_TOKEN configured"}
+    return {
+        "method": "none",
+        "success": False,
+        "fault_codes": resettable_fault_codes,
+        "read_method": read_method,
+        "error": "No GITHUB_LAMBDA_NAME or GITHUB_TOKEN configured",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -941,7 +1425,7 @@ def pipeline_callback():
     live_incidents = get_live_incidents()
 
     for fault_code in fault_codes:
-        matched = False
+        matched_incident_ids = []
 
         for inc in live_incidents:
             if inc.get("error_code") != fault_code:
@@ -949,7 +1433,7 @@ def pipeline_callback():
             if inc.get("status") == "resolved":
                 continue
 
-            matched = True
+            matched_incident_ids.append(inc["id"])
             if pipeline_status == "success":
                 updates = {
                     "status": "resolved",
@@ -980,8 +1464,43 @@ def pipeline_callback():
             if result:
                 updated.append(inc["id"])
 
-        if not matched:
-            logger.info("No active incident found for fault_code %s, skipping", fault_code)
+        if matched_incident_ids:
+            continue
+
+        created = create_live_incident(
+            error_code=fault_code,
+            route=_default_route_for_fault_code(fault_code),
+            reason="pipeline_success" if pipeline_status == "success" else "pipeline_failure",
+        )
+        if pipeline_status == "success":
+            updates = {
+                "status": "resolved",
+                "timestamp_resolved": now,
+                "verification": {
+                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_after": 0,
+                    "health_check_status": "passed",
+                    "success": True,
+                },
+                "commit_sha": data.get("commit_sha", ""),
+                "run_url": data.get("run_url", ""),
+            }
+        else:
+            updates = {
+                "status": "in_progress",
+                "verification": {
+                    "latency_before": created.get("symptoms", {}).get("latency_p95_value", 0),
+                    "latency_after": None,
+                    "health_check_status": "failed",
+                    "success": False,
+                },
+                "commit_sha": data.get("commit_sha", ""),
+                "run_url": data.get("run_url", ""),
+            }
+
+        result = update_live_incident(created["id"], updates)
+        if result:
+            updated.append(created["id"])
 
     logger.info(
         "Pipeline callback (%s): updated %s for %s",
@@ -992,34 +1511,18 @@ def pipeline_callback():
 
 @developer.post("/developer/incidents/pipeline/resolve-all")
 def pipeline_resolve_all():
-    """Called by GitHub Actions when deploy succeeds but no [FAULT:] tags found.
-
-    Resolves ALL active incidents since a successful deploy means the
-    codebase is healthy.
-    """
+    """Ignore non-fault deploys so unrelated incidents are never auto-resolved."""
     data = request.get_json(force=True, silent=True) or {}
-    now = datetime.now()
-    updated = []
-
-    for inc in get_live_incidents():
-        if inc.get("status") in ("detected", "in_progress"):
-            result = update_live_incident(inc["id"], {
-                "status": "resolved",
-                "timestamp_resolved": now,
-                "verification": {
-                    "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
-                    "latency_after": 0,
-                    "health_check_status": "passed",
-                    "success": True,
-                },
-                "commit_sha": data.get("commit_sha", ""),
-                "run_url": data.get("run_url", ""),
-            })
-            if result:
-                updated.append(inc["id"])
-
-    logger.info("Pipeline resolve-all: resolved %s", updated)
-    return jsonify({"success": True, "status": "success", "updated": updated})
+    logger.info(
+        "Pipeline resolve-all ignored for commit %s; leaving active incidents untouched",
+        data.get("commit_sha", ""),
+    )
+    return jsonify({
+        "success": True,
+        "status": "ignored",
+        "updated": [],
+        "message": "Non-fault deploys do not auto-resolve incidents.",
+    })
 
 
 # This function handles manual resolution of an incident from the dashboard.

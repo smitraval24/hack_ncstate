@@ -7,10 +7,14 @@ from flask import url_for
 
 from lib.test import ViewTestMixin
 from hello.developer.views import (
+    _collect_resettable_fault_codes,
+    _filter_incidents_after_demo_reset,
+    _restore_faulty_functions,
     build_dashboard_aggregates,
     build_incident_trend,
     get_mock_incidents,
 )
+from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
 
 
 # This function handles the make incident work for this file.
@@ -36,6 +40,62 @@ def _make_incident(
 
 # This class keeps the test developer incident views data and behavior in one place.
 class TestDeveloperIncidentViews(ViewTestMixin):
+    def test_restore_faulty_functions_only_reverts_selected_fault_handlers(self):
+        current_source = (
+            FAULTY_VIEWS_CONTENT
+            .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
+            .replace('requests.get("http://mock_api:5001/data", timeout=3)', 'requests.get("http://mock_api:5001/data", timeout=10)', 1)
+        )
+
+        restored = _restore_faulty_functions(
+            current_source,
+            ["FAULT_SQL_INJECTION_TEST"],
+        )
+
+        assert 'db.session.execute(text("SELECT FROM"))' in restored
+        assert 'requests.get("http://mock_api:5001/data", timeout=10)' in restored
+        assert restored.count('db.session.execute(text("SELECT FROM"))') == 1
+
+    def test_collect_resettable_fault_codes_only_includes_auto_healed_resolved_faults(self):
+        incidents = [
+            {
+                "error_code": "FAULT_SQL_INJECTION_TEST",
+                "status": "resolved",
+                "remediation": {"action_type": "auto_fix_pushed"},
+                "verification": {"success": True},
+            },
+            {
+                "error_code": "FAULT_EXTERNAL_API_LATENCY",
+                "status": "resolved",
+                "remediation": {"action_type": None},
+                "verification": {"success": True},
+            },
+            {
+                "error_code": "FAULT_DB_TIMEOUT",
+                "status": "in_progress",
+                "remediation": {"action_type": "auto_fix_pushed"},
+                "verification": {"success": None},
+            },
+        ]
+
+        assert _collect_resettable_fault_codes(incidents) == [
+            "FAULT_SQL_INJECTION_TEST"
+        ]
+
+    @patch("hello.developer.views._get_demo_reset_timestamp")
+    def test_filter_incidents_after_demo_reset_removes_stale_items(self, mock_cutoff):
+        cutoff = datetime.now().replace(microsecond=0)
+        mock_cutoff.return_value = cutoff
+        incidents = [
+            {"id": "before", "timestamp_opened": cutoff - timedelta(minutes=5)},
+            {"id": "after", "timestamp_opened": cutoff + timedelta(minutes=5)},
+            {"id": "unknown", "timestamp_opened": None},
+        ]
+
+        filtered = _filter_incidents_after_demo_reset(incidents)
+
+        assert [incident["id"] for incident in filtered] == ["after", "unknown"]
+
     def test_build_incident_trend_aggregates_last_seven_days(self):
         now = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
         incidents = [
@@ -217,3 +277,89 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         )
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0002"
         assert mock_update_live_incident.call_args.args[1]["status"] == "resolved"
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_callback_updates_only_requested_fault_code(
+        self,
+        mock_get_live_incidents,
+        mock_update_live_incident,
+    ):
+        mock_get_live_incidents.return_value = [
+            {
+                "id": "LIVE-0001",
+                "error_code": "FAULT_SQL_INJECTION_TEST",
+                "status": "in_progress",
+                "symptoms": {"latency_p95_value": 0},
+            },
+            {
+                "id": "LIVE-0002",
+                "error_code": "FAULT_DB_TIMEOUT",
+                "status": "detected",
+                "symptoms": {"latency_p95_value": 5},
+            },
+        ]
+        mock_update_live_incident.return_value = {"id": "LIVE-0001"}
+
+        response = self.client.post(
+            url_for("developer.pipeline_callback"),
+            json={
+                "fault_codes": ["FAULT_SQL_INJECTION_TEST"],
+                "status": "success",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["updated"] == ["LIVE-0001"]
+        assert mock_update_live_incident.call_count == 1
+        assert mock_update_live_incident.call_args.args[0] == "LIVE-0001"
+
+    @patch("hello.developer.views._reset_faulty_code")
+    @patch("hello.developer.views._pause_self_healing")
+    @patch("hello.developer.views._record_demo_reset")
+    @patch("hello.developer.views.reset_live_incidents")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_reset_incidents_restores_only_auto_healed_faults(
+        self,
+        mock_get_live_incidents,
+        mock_reset_live_incidents,
+        mock_record_demo_reset,
+        mock_pause_self_healing,
+        mock_reset_faulty_code,
+    ):
+        mock_get_live_incidents.return_value = [
+            {
+                "error_code": "FAULT_SQL_INJECTION_TEST",
+                "status": "resolved",
+                "remediation": {"action_type": "auto_fix_pushed"},
+                "verification": {"success": True},
+            },
+            {
+                "error_code": "FAULT_DB_TIMEOUT",
+                "status": "detected",
+                "remediation": {"action_type": None},
+                "verification": {"success": None},
+            },
+        ]
+        mock_reset_live_incidents.return_value = 2
+        mock_reset_faulty_code.return_value = {"success": True}
+
+        response = self.client.post(url_for("developer.reset_incidents"))
+
+        assert response.status_code == 200
+        payload = response.get_json()
+        assert payload["restored_fault_codes"] == ["FAULT_SQL_INJECTION_TEST"]
+        mock_reset_faulty_code.assert_called_once_with(["FAULT_SQL_INJECTION_TEST"])
+        mock_pause_self_healing.assert_called_once()
+        mock_record_demo_reset.assert_called_once()
+
+    @patch("hello.developer.views.update_live_incident")
+    def test_pipeline_resolve_all_is_a_noop(self, mock_update_live_incident):
+        response = self.client.post(
+            url_for("developer.pipeline_resolve_all"),
+            json={"commit_sha": "abc123"},
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["status"] == "ignored"
+        mock_update_live_incident.assert_not_called()

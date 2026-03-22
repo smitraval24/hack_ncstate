@@ -18,6 +18,10 @@ FAULT_CODES = {
     "FAULT_EXTERNAL_API_LATENCY",
     "FAULT_DB_TIMEOUT"
 }
+FORBIDDEN_CONTEXT_FILES = (
+    "hello/page/_faulty_views_template.py",
+    "hello/page/_fault_cores.py",
+)
 
 # Skip processing if the demo is paused (set by the Reset endpoint).
 DEMO_PAUSE_PARAM = "/cream/demo-paused"
@@ -95,13 +99,17 @@ def invoke_claude(incident, analysis):
     tools = [
         {
             "name": "read_github_file",
-            "description": "Read the current content of a file from the GitHub repository before making changes.",
+            "description": (
+                "Read the current content of hello/page/views.py from the GitHub "
+                "repository before making changes. Do not read template, sample, "
+                "or fault reference files."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Path to the file to read e.g. hello/page/views.py"
+                        "description": "Must be exactly hello/page/views.py"
                     }
                 },
                 "required": ["file_path"]
@@ -177,12 +185,15 @@ BACKBOARD_ANALYSIS:
 TARGET FILE: hello/page/views.py
 TARGET FUNCTION: {target_function}()
 FIX HINT: {fix_hint}
+FORBIDDEN CONTEXT FILES: {", ".join(FORBIDDEN_CONTEXT_FILES)}
 
 CRITICAL RULES:
 1. ONLY modify the function `{target_function}()` and any helper you add for it.
 2. Do NOT touch, modify, or "improve" any other function in the file (home, _render_fault, test_fault, or any other test_fault_* function).
 3. Every line of code outside `{target_function}()` must remain EXACTLY as-is — same imports, same logic, same comments, same bugs. If another function has a bug, LEAVE IT. You are only fixing {incident['fault_code']}.
-4. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
+4. Do NOT read, inspect, quote, summarize, or use any sample/template fault file as context, especially {", ".join(FORBIDDEN_CONTEXT_FILES)}.
+5. The ONLY file you may read from GitHub is `hello/page/views.py`.
+6. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
 
 Steps:
 1. Call read_github_file to read hello/page/views.py

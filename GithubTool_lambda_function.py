@@ -6,12 +6,38 @@ import os
 import urllib.request
 import boto3
 
-secrets = boto3.client("secretsmanager")
 GITHUB_API = "https://api.github.com"
+ALLOWED_FILE_PATHS = {"hello/page/views.py"}
+FORBIDDEN_CONTEXT_FILE_PATHS = {
+    "hello/page/_faulty_views_template.py",
+    "hello/page/_fault_cores.py",
+}
+
+
+def normalize_file_path(file_path: str) -> str:
+    """Normalize incoming file paths before validation."""
+    return file_path.lstrip("/")
+
+
+def validate_file_path(file_path: str) -> str:
+    """Allow only the live remediation target file."""
+    normalized = normalize_file_path(file_path)
+
+    if normalized in FORBIDDEN_CONTEXT_FILE_PATHS:
+        raise ValueError(
+            f"Access to {normalized} is forbidden for remediation context"
+        )
+    if normalized not in ALLOWED_FILE_PATHS:
+        raise ValueError(
+            f"Only {sorted(ALLOWED_FILE_PATHS)[0]} can be accessed by this tool"
+        )
+
+    return normalized
 
 # This function gets the token data the rest of the code needs.
 def get_token():
     arn = os.environ["GITHUB_SECRET_ARN"]
+    secrets = boto3.client("secretsmanager")
     sec = secrets.get_secret_value(SecretId=arn)["SecretString"]
     return json.loads(sec)["GITHUB_TOKEN"]
 
@@ -50,7 +76,7 @@ def lambda_handler(event, context):
 
         # ✅ READ file from GitHub
         if fn_name == "read_github_file":
-            file_path = params["file_path"].lstrip("/")
+            file_path = validate_file_path(params["file_path"])
             existing = gh_request("GET", f"/repos/{owner}/{repo}/contents/{file_path}?ref={branch}")
             content = base64.b64decode(existing["content"]).decode("utf-8")
             result = {"ok": True, "file_path": file_path, "content": content}
@@ -58,7 +84,7 @@ def lambda_handler(event, context):
         # ✅ WRITE file to GitHub
         elif fn_name == "push_github_fix":
             import re
-            file_path     = params["file_path"].lstrip("/")
+            file_path     = validate_file_path(params["file_path"])
             file_content  = params["file_content"]
             commit_message = params.get("commit_message", f"Update {file_path}")
 

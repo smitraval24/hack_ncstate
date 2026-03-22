@@ -116,3 +116,56 @@ def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
     assert body["ok"] is True
     assert body["no_change"] is True
     assert body["commit_sha"] is None
+
+
+# This function runs the read github file rejects fault template files work used in this file.
+def test_read_github_file_rejects_fault_template_file():
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "read_github_file",
+            "parameters": [
+                {
+                    "name": "file_path",
+                    "value": "hello/page/_faulty_views_template.py",
+                },
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is False
+    assert "forbidden" in body["error"].lower()
+
+
+# This function runs the push github fix rejects unexpected files work used in this file.
+def test_push_github_fix_rejects_unexpected_file():
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "parameters": [
+                {"name": "file_path", "value": "README.md"},
+                {"name": "file_content", "value": "updated"},
+                {"name": "commit_message", "value": "Should fail"},
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is False
+    assert "only hello/page/views.py" in body["error"].lower()
