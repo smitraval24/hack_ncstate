@@ -183,27 +183,27 @@ def _safe_database_operation(operation_func, timeout_seconds=2):
                 current_app.logger.warning("Failed to close database connection")
 
 
-def _make_external_api_call_with_resilience(url: str, timeout: float = 15.0, max_retries: int = 3):
+def _make_external_api_call_with_resilience(url: str, timeout: float = 5.0, max_retries: int = 1):
     """
-    Make external API call with optimized timeout and retry logic to reduce resource consumption.
+    Make external API call with aggressive timeout and minimal retry logic to prevent billing issues.
     Returns (success, response_data, error_type, latency)
     """
     start_time = time.time()
     last_exception = None
     
-    # Optimized retry delays: shorter, fixed intervals to reduce billing impact
-    retry_delays = [0.5, 1.0, 2.0]  # Fixed delays instead of exponential backoff
+    # Minimal retry delay to reduce billing impact - only one short retry
+    retry_delay = 0.2  # Very short delay between attempts
     
     for attempt in range(max_retries + 1):
         try:
-            # Optimized timeouts to reduce resource consumption while maintaining functionality
-            # Reduced connect timeout from 10s to 3s and read timeout to 15s (from 30s)
+            # Aggressive timeout settings to minimize resource consumption and billing
+            # Connect timeout: 1s, Read timeout: reduced to 5s (from 15s)
             response = requests.get(
                 url, 
-                timeout=(3.0, timeout),  # (connect_timeout, read_timeout) - optimized values
+                timeout=(1.0, timeout),  # (connect_timeout, read_timeout) - very aggressive
                 headers={
                     'Connection': 'close',
-                    'User-Agent': 'cream-service/1.0'  # Add user agent for better tracking
+                    'User-Agent': 'cream-service/1.0'
                 }
             )
             latency = time.time() - start_time
@@ -216,9 +216,8 @@ def _make_external_api_call_with_resilience(url: str, timeout: float = 15.0, max
             latency = time.time() - start_time
             current_app.logger.warning(f"External API timeout on attempt {attempt + 1}/{max_retries + 1}, latency so far: {latency:.2f}s")
             if attempt < max_retries:
-                sleep_time = retry_delays[min(attempt, len(retry_delays) - 1)]
-                current_app.logger.info(f"Retrying in {sleep_time}s...")
-                time.sleep(sleep_time)
+                current_app.logger.info(f"Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
                 continue
             return False, None, "external_timeout", latency
             
@@ -227,9 +226,8 @@ def _make_external_api_call_with_resilience(url: str, timeout: float = 15.0, max
             latency = time.time() - start_time
             current_app.logger.warning(f"External API connection error on attempt {attempt + 1}/{max_retries + 1}: {str(e)[:100]}")
             if attempt < max_retries:
-                sleep_time = retry_delays[min(attempt, len(retry_delays) - 1)]
-                current_app.logger.info(f"Retrying connection in {sleep_time}s...")
-                time.sleep(sleep_time)
+                current_app.logger.info(f"Retrying connection in {retry_delay}s...")
+                time.sleep(retry_delay)
                 continue
             return False, None, "connection_error", latency
             
@@ -241,12 +239,9 @@ def _make_external_api_call_with_resilience(url: str, timeout: float = 15.0, max
             
             # Only retry on 5xx errors (server errors) and 429 (rate limit)
             if status_code and (status_code >= 500 or status_code == 429) and attempt < max_retries:
-                sleep_time = retry_delays[min(attempt, len(retry_delays) - 1)]
-                # Add extra delay for rate limiting
-                if status_code == 429:
-                    sleep_time += 1.0
-                current_app.logger.info(f"Retrying server error in {sleep_time}s...")
-                time.sleep(sleep_time)
+                # Minimal delay for server errors to reduce billing impact
+                current_app.logger.info(f"Retrying server error in {retry_delay}s...")
+                time.sleep(retry_delay)
                 continue
             return False, None, "upstream_failure", latency
             
@@ -255,9 +250,8 @@ def _make_external_api_call_with_resilience(url: str, timeout: float = 15.0, max
             latency = time.time() - start_time
             current_app.logger.warning(f"Unexpected error in external API call: {str(e)[:100]}")
             if attempt < max_retries:
-                sleep_time = retry_delays[min(attempt, len(retry_delays) - 1)]
-                current_app.logger.info(f"Retrying unexpected error in {sleep_time}s...")
-                time.sleep(sleep_time)
+                current_app.logger.info(f"Retrying unexpected error in {retry_delay}s...")
+                time.sleep(retry_delay)
                 continue
             return False, None, "unexpected_error", latency
     
@@ -337,13 +331,13 @@ def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
 
-    # Optimized external API call with reduced resource consumption
-    # Reduced timeout from 30s to 15s and retries from 5 to 3 to minimize billing impact
-    # Implemented fixed delay retry strategy instead of exponential backoff
+    # Aggressive external API call optimization to prevent billing issues
+    # Reduced timeout from 15s to 5s and retries from 3 to 1 to minimize resource consumption
+    # This should resolve the billing error by dramatically reducing API call duration
     success, response_data, error_type, latency = _make_external_api_call_with_resilience(
         "http://mock_api:5001/data", 
-        timeout=15.0,  # Reduced from 30s to 15s to minimize resource usage
-        max_retries=3  # Reduced from 5 to 3 retries to reduce billing impact
+        timeout=5.0,   # Reduced from 15s to 5s to prevent billing issues
+        max_retries=1  # Reduced from 3 to 1 to minimize resource consumption
     )
 
     current_app.logger.info(f"external_call_latency={latency:.2f}")
