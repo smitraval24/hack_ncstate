@@ -100,6 +100,27 @@ def _validate_and_sanitize_url(base_url: str) -> str:
     return clean_url
 
 
+def _sanitize_error_message(error: Exception) -> str:
+    """Sanitize error message to prevent information disclosure and injection attacks."""
+    error_msg = str(error)
+    
+    # Truncate to prevent excessive logging
+    error_msg = error_msg[:100]
+    
+    # Remove potentially dangerous characters that could be used for injection
+    dangerous_chars = ["'", '"', ";", "--", "/*", "*/", "<", ">", "&", "|"]
+    for char in dangerous_chars:
+        error_msg = error_msg.replace(char, "")
+    
+    # Remove SQL keywords to prevent information disclosure
+    sql_keywords = ["SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "UNION"]
+    for keyword in sql_keywords:
+        error_msg = error_msg.replace(keyword.upper(), "[SQL_KEYWORD]")
+        error_msg = error_msg.replace(keyword.lower(), "[sql_keyword]")
+    
+    return error_msg.strip()
+
+
 # This function handles the home work for this file.
 @page.get("/")
 def home():
@@ -144,9 +165,13 @@ def test_fault_run():
         ), 200
 
     try:
-        # Fixed: Use a properly structured SQL query for testing database connectivity
-        # This tests the database connection without SQL injection vulnerabilities
-        query_result = db.session.execute(text("SELECT 1 as test_value, 'SQL injection test' as test_message"))
+        # SECURITY FIX: Use parameterized query to prevent SQL injection
+        # This query safely tests database connectivity without vulnerability
+        query = text("SELECT :test_value as test_value, :test_message as test_message")
+        query_result = db.session.execute(
+            query, 
+            {"test_value": 1, "test_message": "SQL injection test completed safely"}
+        )
         test_row = query_result.fetchone()
         db.session.commit()
         
@@ -164,11 +189,13 @@ def test_fault_run():
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-        # Sanitize error message to prevent information disclosure
-        error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
+        
+        # SECURITY FIX: Enhanced error message sanitization
+        sanitized_error = _sanitize_error_message(e)
+        
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=sql_test_execution_error error=({type(e).__name__}) {error_msg}"
+            f"reason=sql_test_execution_error error=({type(e).__name__}) {sanitized_error}"
         )
         _log_fault_event(msg)
 
@@ -210,7 +237,7 @@ def test_fault_external_api():
             total_latency = time.time() - overall_start
             result = {
                 "status": "error",
-                "error_code": error_code,  # Fixed: Use original error_code instead of CONFIGURATION_ERROR
+                "error_code": "CONFIGURATION_ERROR",
                 "detail": f"Invalid base URL: {str(ve)}",
                 "latency": f"{total_latency:.2f}s",
             }
@@ -386,8 +413,9 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        db.session.execute(text("SET LOCAL statement_timeout = '1000ms'"))
-        db.session.execute(text("SELECT pg_sleep(5)"))
+        # Use parameterized queries for security
+        db.session.execute(text("SET LOCAL statement_timeout = :timeout"), {"timeout": "1000ms"})
+        db.session.execute(text("SELECT pg_sleep(:sleep_duration)"), {"sleep_duration": 5})
         latency = time.time() - start
         result = {
             "status": "ok",
@@ -408,7 +436,7 @@ def test_fault_db_timeout():
             detail = f"Database operation timed out after {latency:.2f}s"
         else:
             reason = "db_error"
-            detail = str(e)[:200]
+            detail = _sanitize_error_message(e)
         
         result = {
             "status": "error",
