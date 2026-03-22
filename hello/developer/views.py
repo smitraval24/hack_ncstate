@@ -39,9 +39,9 @@ FAULT_FUNCTION_MAP = {
 
 # Maps fault codes to their individual file paths (used for split-file reset)
 FAULT_FILE_PATH_MAP = {
-    "FAULT_SQL_INJECTION_TEST": "hello/page/fault_sql.py",
-    "FAULT_EXTERNAL_API_LATENCY": "hello/page/fault_api.py",
-    "FAULT_DB_TIMEOUT": "hello/page/fault_db.py",
+    "FAULT_SQL_INJECTION_TEST": "hello/page/views_sql.py",
+    "FAULT_EXTERNAL_API_LATENCY": "hello/page/views_api.py",
+    "FAULT_DB_TIMEOUT": "hello/page/views_db.py",
 }
 
 FAULT_ROUTE_MAP = {

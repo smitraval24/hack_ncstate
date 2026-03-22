@@ -20,17 +20,14 @@ FAULT_CODES = {
 }
 FORBIDDEN_CONTEXT_FILES = (
     "hello/page/_faulty_views_template.py",
-    "hello/page/_fault_cores.py",
-    "hello/page/fault_sql.py",
-    "hello/page/fault_api.py",
-    "hello/page/fault_db.py",
+    "hello/page/views.py",
 )
 
 # Each fault code maps to its own isolated file so Claude can only see/edit one fault at a time
 FAULT_FILE_MAP = {
-    "FAULT_SQL_INJECTION_TEST": "hello/page/fault_sql.py",
-    "FAULT_EXTERNAL_API_LATENCY": "hello/page/fault_api.py",
-    "FAULT_DB_TIMEOUT": "hello/page/fault_db.py",
+    "FAULT_SQL_INJECTION_TEST": "hello/page/views_sql.py",
+    "FAULT_EXTERNAL_API_LATENCY": "hello/page/views_api.py",
+    "FAULT_DB_TIMEOUT": "hello/page/views_db.py",
 }
 
 
@@ -105,7 +102,7 @@ def backboard_message(thread_id: str, content: str) -> dict:
 # This function handles the invoke claude work for this file.
 def invoke_claude(incident, analysis):
     # Each fault code has its own isolated file — Claude only sees that one file
-    target_file = FAULT_FILE_MAP.get(incident["fault_code"], "hello/page/fault_sql.py")
+    target_file = FAULT_FILE_MAP.get(incident["fault_code"], "hello/page/views_sql.py")
 
     # Remove the target file from forbidden list so Claude can read/write it
     forbidden_for_this_fault = tuple(f for f in FORBIDDEN_CONTEXT_FILES if f != target_file)

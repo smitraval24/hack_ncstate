@@ -30,24 +30,14 @@ class TestPage(ViewTestMixin):
         assert b"panel.classList.add('is-visible');" in response.data
         assert b"Fault captured without a page reload." not in response.data
 
-    def test_sql_fault_route_wrapper_delegates_to_fault_sql(self, monkeypatch):
-        wrapped = Mock(return_value=("wrapped-response", 200))
-        monkeypatch.setattr("hello.page._fault_cores.fault_sql.test_fault_run", wrapped)
-
-        response = self.client.post("/test-fault/run")
-
-        assert response.status_code == 200
-        assert response.data == b"wrapped-response"
-        wrapped.assert_called_once_with()
-
     def test_test_fault_run_returns_fault_signal(self, monkeypatch):
         execute = Mock(side_effect=RuntimeError("bad sql"))
         rollback = Mock()
         create_live_incident = Mock()
 
-        monkeypatch.setattr("hello.page.fault_sql.db.session.execute", execute)
-        monkeypatch.setattr("hello.page.fault_sql.db.session.rollback", rollback)
-        monkeypatch.setattr("hello.page.fault_sql.create_live_incident", create_live_incident)
+        monkeypatch.setattr("hello.page.views_sql.db.session.execute", execute)
+        monkeypatch.setattr("hello.page.views_sql.db.session.rollback", rollback)
+        monkeypatch.setattr("hello.page.views_sql.create_live_incident", create_live_incident)
 
         response = self.client.post("/test-fault/run")
 
@@ -64,10 +54,10 @@ class TestPage(ViewTestMixin):
     def test_test_fault_external_api_returns_timeout_fault_signal(self, monkeypatch):
         create_live_incident = Mock()
         monkeypatch.setattr(
-            "hello.page.fault_api.requests.get",
+            "hello.page.views_api.requests.get",
             Mock(side_effect=requests.exceptions.Timeout("timed out")),
         )
-        monkeypatch.setattr("hello.page.fault_api.create_live_incident", create_live_incident)
+        monkeypatch.setattr("hello.page.views_api.create_live_incident", create_live_incident)
 
         response = self.client.post("/test-fault/external-api")
 
@@ -82,8 +72,8 @@ class TestPage(ViewTestMixin):
         response_mock.raise_for_status.return_value = None
         response_mock.json.return_value = {"value": "forty-two", "source": "corrupted"}
 
-        monkeypatch.setattr("hello.page.fault_api.requests.get", Mock(return_value=response_mock))
-        monkeypatch.setattr("hello.page.fault_api.create_live_incident", create_live_incident)
+        monkeypatch.setattr("hello.page.views_api.requests.get", Mock(return_value=response_mock))
+        monkeypatch.setattr("hello.page.views_api.create_live_incident", create_live_incident)
 
         response = self.client.post("/test-fault/external-api")
 
@@ -98,9 +88,9 @@ class TestPage(ViewTestMixin):
         rollback = Mock()
         create_live_incident = Mock()
 
-        monkeypatch.setattr("hello.page.fault_db.db.session.execute", execute)
-        monkeypatch.setattr("hello.page.fault_db.db.session.rollback", rollback)
-        monkeypatch.setattr("hello.page.fault_db.create_live_incident", create_live_incident)
+        monkeypatch.setattr("hello.page.views_db.db.session.execute", execute)
+        monkeypatch.setattr("hello.page.views_db.db.session.rollback", rollback)
+        monkeypatch.setattr("hello.page.views_db.create_live_incident", create_live_incident)
 
         response = self.client.post("/test-fault/db-timeout")
 

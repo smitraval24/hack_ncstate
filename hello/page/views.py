@@ -2,12 +2,9 @@
 
 import os
 import sys
-import time
-import requests
 from importlib.metadata import version
 
-from flask import Blueprint, render_template, request
-import sqlite3
+from flask import Blueprint, render_template
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -47,107 +44,7 @@ def test_fault():
     return _render_fault()
 
 
-@page.post("/test-fault/run")
-def test_fault_run():
-    """Handle fault injection test with proper SQL injection protection."""
-    if not ENABLE_FAULT_INJECTION:
-        return _render_fault(result="Fault injection disabled")
-    
-    # Get user input safely
-    user_input = request.form.get("query", "")
-    
-    try:
-        # Use parameterized queries to prevent SQL injection
-        conn = sqlite3.connect(":memory:")  # In-memory database for testing
-        cursor = conn.cursor()
-        
-        # Create a test table
-        cursor.execute("CREATE TABLE test_table (id INTEGER, name TEXT)")
-        cursor.execute("INSERT INTO test_table VALUES (1, 'test_data')")
-        
-        # Use parameterized query instead of string concatenation
-        # This prevents SQL injection by treating user input as data, not code
-        safe_query = "SELECT * FROM test_table WHERE name = ?"
-        cursor.execute(safe_query, (user_input,))
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        return _render_fault(result=f"Query executed safely. Results: {results}")
-        
-    except Exception as e:
-        return _render_fault(result=f"Error: {str(e)}")
-
-
-@page.get("/test-fault/external-api")
-def test_fault_external_api():
-    """Handle external API calls with proper timeout and retry logic."""
-    if not ENABLE_FAULT_INJECTION:
-        return _render_fault(result="Fault injection disabled")
-    
-    start_time = time.time()
-    max_retries = 3
-    timeout_seconds = 5
-    retry_delay = 0.5
-    
-    for attempt in range(max_retries):
-        try:
-            # Make external API call with proper timeout and error handling
-            response = requests.get(
-                "https://httpbin.org/delay/1",  # Test endpoint that introduces delay
-                timeout=timeout_seconds,
-                headers={
-                    'User-Agent': 'cream-app/1.0',
-                    'Accept': 'application/json'
-                }
-            )
-            
-            # Check if response is successful
-            response.raise_for_status()
-            
-            end_time = time.time()
-            latency = end_time - start_time
-            
-            return _render_fault(
-                result=f"External API call successful. Latency: {latency:.3f}s, Status: {response.status_code}"
-            )
-            
-        except requests.exceptions.Timeout:
-            end_time = time.time()
-            latency = end_time - start_time
-            
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            else:
-                return _render_fault(
-                    result=f"FAULT_EXTERNAL_API_LATENCY: Timeout after {max_retries} attempts. Total latency: {latency:.3f}s"
-                )
-                
-        except requests.exceptions.ConnectionError as e:
-            end_time = time.time()
-            latency = end_time - start_time
-            
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            else:
-                return _render_fault(
-                    result=f"FAULT_EXTERNAL_API_LATENCY: Connection error after {max_retries} attempts. Reason: connection_error, Latency: {latency:.3f}s"
-                )
-                
-        except requests.exceptions.HTTPError as e:
-            end_time = time.time()
-            latency = end_time - start_time
-            
-            return _render_fault(
-                result=f"FAULT_EXTERNAL_API_LATENCY: HTTP error {e.response.status_code}. Latency: {latency:.3f}s"
-            )
-            
-        except requests.exceptions.RequestException as e:
-            end_time = time.time()
-            latency = end_time - start_time
-            
-            return _render_fault(
-                result=f"FAULT_EXTERNAL_API_LATENCY: Request failed - {str(e)}. Latency: {latency:.3f}s"
-            )
+# Import fault route modules so their @page routes get registered.
+# Each views_*.py file is the ONLY file the self-healing loop edits
+# for its respective fault code.
+from hello.page import views_sql, views_db, views_api  # noqa: F401, E402

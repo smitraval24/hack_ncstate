@@ -581,14 +581,14 @@
 
     <div id="fault-result-slot">
       {% if result %}
-        <section class="result-panel {% if result.status == 'error' %}result-panel--danger{% else %}result-panel--success{% endif %}" data-reveal style="--reveal-delay: 60ms;">
+        <section class="result-panel {% if result.status == 'ok' %}result-panel--success{% else %}result-panel--danger{% endif %}" data-reveal style="--reveal-delay: 60ms;">
           <div class="result-title">
-            {% if result.status == 'error' %}
-              Fault triggered
+            {% if result.status == 'ok' %}
+              Fault healed — no error detected
             {% elif result.status == 'disabled' %}
               Fault injection disabled
             {% else %}
-              Fault healed — no error detected
+              Fault triggered
             {% endif %}
           </div>
           {% if result.status == 'ok' %}

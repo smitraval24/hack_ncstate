@@ -7,11 +7,11 @@ enabling the demo cycle to repeat.
 Each fault file has its own template so resets are truly independent.
 """
 
-FAULTY_FAULT_SQL_CONTENT = '''\
+FAULTY_VIEWS_SQL_CONTENT = '''\
 """Fault handler for FAULT_SQL_INJECTION_TEST.
 
-This file is the ONLY file the self-healing loop may edit when remediating
-this fault code.  The stable route wrapper in _fault_cores.py delegates here.
+This is the ONLY file the self-healing loop may edit when remediating
+this fault code.  The route is registered on the page blueprint.
 """
 
 import sys
@@ -24,9 +24,10 @@ from hello.extensions import db
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import _render_fault
+from hello.page.views import page, _render_fault
 
 
+@page.post("/test-fault/run")
 def test_fault_run():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -60,11 +61,11 @@ def test_fault_run():
     return _render_fault(result), (500 if result["status"] == "error" else 200)
 '''
 
-FAULTY_FAULT_API_CONTENT = '''\
+FAULTY_VIEWS_API_CONTENT = '''\
 """Fault handler for FAULT_EXTERNAL_API_LATENCY.
 
-This file is the ONLY file the self-healing loop may edit when remediating
-this fault code.  The stable route wrapper in _fault_cores.py delegates here.
+This is the ONLY file the self-healing loop may edit when remediating
+this fault code.  The route is registered on the page blueprint.
 """
 
 import os
@@ -78,7 +79,7 @@ from config.settings import ENABLE_FAULT_INJECTION
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import _render_fault
+from hello.page.views import page, _render_fault
 
 
 def _record_external_api_incident(reason: str, latency: float) -> None:
@@ -91,6 +92,7 @@ def _record_external_api_incident(reason: str, latency: float) -> None:
     )
 
 
+@page.post("/test-fault/external-api")
 def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -201,11 +203,11 @@ def test_fault_external_api():
     return _render_fault(result), (504 if result["status"] == "error" else 200)
 '''
 
-FAULTY_FAULT_DB_CONTENT = '''\
+FAULTY_VIEWS_DB_CONTENT = '''\
 """Fault handler for FAULT_DB_TIMEOUT.
 
-This file is the ONLY file the self-healing loop may edit when remediating
-this fault code.  The stable route wrapper in _fault_cores.py delegates here.
+This is the ONLY file the self-healing loop may edit when remediating
+this fault code.  The route is registered on the page blueprint.
 """
 
 import sys
@@ -219,9 +221,10 @@ from hello.extensions import db
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import _render_fault
+from hello.page.views import page, _render_fault
 
 
+@page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -232,7 +235,7 @@ def test_fault_db_timeout():
     start = time.time()
 
     # INTENTIONAL BUG: minimum 5s delay to simulate a slow DB timeout.
-    # With a real DB, pg_sleep(10) + statement_timeout='5500ms' takes ~5.5s.
+    # With a real DB, pg_sleep(10) + statement_timeout=\\'5500ms\\' takes ~5.5s.
     # If the DB is unreachable the connection error is instant, so we
     # enforce a floor so the response always visibly hangs.
     min_delay = 5.0
@@ -281,15 +284,15 @@ def test_fault_db_timeout():
 # Map fault codes to their template content and target file path
 FAULT_FILE_MAP = {
     "FAULT_SQL_INJECTION_TEST": {
-        "file_path": "hello/page/fault_sql.py",
-        "content": FAULTY_FAULT_SQL_CONTENT,
+        "file_path": "hello/page/views_sql.py",
+        "content": FAULTY_VIEWS_SQL_CONTENT,
     },
     "FAULT_EXTERNAL_API_LATENCY": {
-        "file_path": "hello/page/fault_api.py",
-        "content": FAULTY_FAULT_API_CONTENT,
+        "file_path": "hello/page/views_api.py",
+        "content": FAULTY_VIEWS_API_CONTENT,
     },
     "FAULT_DB_TIMEOUT": {
-        "file_path": "hello/page/fault_db.py",
-        "content": FAULTY_FAULT_DB_CONTENT,
+        "file_path": "hello/page/views_db.py",
+        "content": FAULTY_VIEWS_DB_CONTENT,
     },
 }

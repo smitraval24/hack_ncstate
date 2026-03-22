@@ -8,13 +8,12 @@ import boto3
 
 GITHUB_API = "https://api.github.com"
 ALLOWED_FILE_PATHS = {
-    "hello/page/fault_sql.py",
-    "hello/page/fault_api.py",
-    "hello/page/fault_db.py",
+    "hello/page/views_sql.py",
+    "hello/page/views_api.py",
+    "hello/page/views_db.py",
 }
 FORBIDDEN_CONTEXT_FILE_PATHS = {
     "hello/page/_faulty_views_template.py",
-    "hello/page/_fault_cores.py",
     "hello/page/views.py",
 }
 
