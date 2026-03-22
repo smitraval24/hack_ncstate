@@ -55,22 +55,19 @@ jobs:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build \
+        docker buildx build \
           --cache-from type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:buildcache \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --cache-to type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:buildcache,mode=max \
           --target app \
           -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
           -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-          . &
-        docker build \
-          --cache-from type=registry,ref=$ECR_REGISTRY/mock-api:latest \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --push . &
+        docker buildx build \
+          --cache-from type=registry,ref=$ECR_REGISTRY/mock-api:buildcache \
+          --cache-to type=registry,ref=$ECR_REGISTRY/mock-api:buildcache,mode=max \
           -t $ECR_REGISTRY/mock-api:latest \
-          -f Dockerfile.mock_api . &
-        wait
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG &
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest &
-        docker push $ECR_REGISTRY/mock-api:latest &
+          -f Dockerfile.mock_api \
+          --push . &
         wait
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
       id: build-image
