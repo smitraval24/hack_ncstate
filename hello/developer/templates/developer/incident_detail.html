@@ -641,6 +641,11 @@
                 Resolution pending
               {% endif %}
             </span>
+            {% if incident.status != 'resolved' %}
+              <span id="resolve-action">
+                <button onclick="manualResolve()" class="cta-button cta-button--primary" style="margin-left: 8px;">Mark as Resolved</button>
+              </span>
+            {% endif %}
           </div>
         </div>
 
@@ -810,7 +815,14 @@
           <div class="action-item">
             <div class="action-item__label">Code Diff / Commit Trace</div>
             <div class="action-item__value">
-              Not available for this incident. This page only shows code-fix data when it already exists in the incident object.
+              {% if incident.commit_sha %}
+                Commit: <code>{{ incident.commit_sha[:12] }}</code>
+                {% if incident.run_url %}
+                  &nbsp;|&nbsp; <a href="{{ incident.run_url }}" target="_blank" rel="noopener" style="color: #45dcff; text-decoration: underline;">View CI/CD Run</a>
+                {% endif %}
+              {% else %}
+                No commit trace available. If the fix was deployed manually or the pipeline callback didn't fire, use the resolve button below.
+              {% endif %}
             </div>
           </div>
         </div>
@@ -958,6 +970,29 @@
       }
     });
     {% endif %}
+
+    function manualResolve() {
+      const actionEl = document.getElementById('resolve-action');
+      actionEl.innerHTML = '<span class="status-chip status-chip--neutral">Resolving...</span>';
+
+      fetch('/developer/incidents/{{ incident.id }}/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          actionEl.innerHTML = '<span class="status-chip status-chip--success">Resolved</span>';
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          actionEl.innerHTML = '<span class="status-chip status-chip--danger">' + (data.error || 'Failed') + '</span>';
+        }
+      })
+      .catch((err) => {
+        actionEl.innerHTML = '<span class="status-chip status-chip--danger">Error: ' + err.message + '</span>';
+      });
+    }
 
     function storeInRAG() {
       const btn = document.getElementById('store-rag-btn');

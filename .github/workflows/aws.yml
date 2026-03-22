@@ -98,6 +98,10 @@ jobs:
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
 
+    # Ensure jq is available before fault code extraction
+    - name: Install jq
+      run: which jq || (sudo apt-get update && sudo apt-get install -y jq)
+
     # Extract fault codes from commit messages for pipeline callback.
     # Commits from the Lambda include "[FAULT:CODE]" tags.
     - name: Extract fault codes from commit
@@ -106,14 +110,10 @@ jobs:
         COMMIT_MSG=$(git log -1 --pretty=%B)
         echo "commit_msg=$COMMIT_MSG"
         # Extract all [FAULT:...] tags from the commit message
-        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
+        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))' || echo '[]')
         echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
         echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
         echo "Extracted fault codes: $CODES"
-
-    # Ensure jq is available
-    - name: Install jq
-      run: sudo apt-get update && sudo apt-get install -y jq
 
     # Cleanup old revisions (keep latest 3)
     - name: Cleanup old task definition revisions
@@ -138,21 +138,47 @@ jobs:
           fi
         done
 
-    # Notify dashboard: deploy succeeded → resolve matching incidents
+    # Notify dashboard: deploy succeeded → resolve ALL active incidents
     - name: Notify dashboard - deploy success
-      if: steps.faults.outputs.has_faults == 'true'
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
       run: |
         echo "Notifying dashboard of successful deploy..."
-        curl -sf -X POST "$DASHBOARD_URL/developer/incidents/pipeline/callback" \
-          -H "Content-Type: application/json" \
-          -d "{
-            \"fault_codes\": ${{ steps.faults.outputs.fault_codes }},
+        # Build fault_codes: use extracted [FAULT:] tags if found,
+        # otherwise resolve all active incidents via resolve-all endpoint.
+        FAULT_CODES='${{ steps.faults.outputs.fault_codes }}'
+        if [ "$FAULT_CODES" = "[]" ] || [ -z "$FAULT_CODES" ]; then
+          echo "No [FAULT:] tags in commit — resolving all active incidents"
+          ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/resolve-all"
+          BODY="{
             \"status\": \"success\",
             \"commit_sha\": \"${{ github.sha }}\",
             \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }" || echo "Warning: dashboard callback failed (non-fatal)"
+          }"
+        else
+          ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/callback"
+          BODY="{
+            \"fault_codes\": $FAULT_CODES,
+            \"status\": \"success\",
+            \"commit_sha\": \"${{ github.sha }}\",
+            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+          }"
+        fi
+        # Retry up to 3 times with backoff in case ECS is still stabilizing
+        for attempt in 1 2 3; do
+          HTTP_CODE=$(curl -s -o /tmp/callback_response.txt -w "%{http_code}" \
+            -X POST "$ENDPOINT" \
+            -H "Content-Type: application/json" \
+            -d "$BODY" 2>/dev/null) || HTTP_CODE=0
+          echo "Attempt $attempt: HTTP $HTTP_CODE"
+          cat /tmp/callback_response.txt 2>/dev/null; echo
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "Dashboard callback succeeded"
+            break
+          fi
+          echo "Retrying in $((attempt * 10))s..."
+          sleep $((attempt * 10))
+        done
 
   # Separate job to handle deploy failure notification
   notify-failure:
