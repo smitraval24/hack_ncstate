@@ -2,6 +2,7 @@
 
 This is the ONLY file the self-healing loop may edit when remediating
 this fault code.  The route is registered on the page blueprint.
+
 """
 
 import sys
@@ -26,8 +27,8 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
-        db.session.execute(text("SELECT FROM"))
+        # FIXED: Use valid SQL syntax instead of malformed SQL
+        db.session.execute(text("SELECT 1"))
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
