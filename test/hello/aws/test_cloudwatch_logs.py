@@ -71,3 +71,34 @@ def test_fetch_recent_events_raises_for_non_access_denied_fallback(monkeypatch):
             lookback=timedelta(minutes=5),
             limit_per_group=20,
         )
+
+
+def test_build_incidents_from_events_keeps_distinct_reasons_separate():
+    events = [
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/ecs/cream-task",
+            log_stream="web/1",
+            timestamp_ms=1_700_000_000_000,
+            message=(
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=external_timeout latency=3.40"
+            ),
+        ),
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/ecs/cream-task",
+            log_stream="web/1",
+            timestamp_ms=1_700_000_005_000,
+            message=(
+                "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
+                "reason=wrong_data latency=0.40"
+            ),
+        ),
+    ]
+
+    incidents = cloudwatch_logs.build_incidents_from_events(events)
+
+    assert len(incidents) == 2
+    assert {incident["symptoms"]["log_marker"] for incident in incidents} == {
+        "external_timeout",
+        "wrong_data",
+    }

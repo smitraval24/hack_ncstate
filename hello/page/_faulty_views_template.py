@@ -14,7 +14,7 @@ import time
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, current_app
+from flask import Blueprint, current_app, render_template
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -69,7 +69,7 @@ def test_fault_run():
     try:
         # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
         db.session.execute(text("SELECT FROM"))
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
@@ -103,18 +103,45 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # INTENTIONAL BUG: 3s timeout against mock API with 60% chance of 2-8s delay
-        # and 30% chance of HTTP 500 — fails ~70% of the time
+        # INTENTIONAL BUG: 3s timeout against mock API with 60% chance of >3s delay
+        # and 30% chance of malformed data.
         r = requests.get(f"{mock_api_base_url}/data", timeout=3)
         latency = time.time() - start
-        current_app.logger.info(f"external_call_latency={latency:.2f}")
+        current_app.logger.info("external_call_latency=%.2f", latency)
         r.raise_for_status()
-        result = {
-            "status": "ok",
-            "error_code": None,
-            "data": r.json(),
-            "latency": f"{latency:.2f}s",
-        }
+        data = r.json()
+
+        if not isinstance(data, dict) or data.get("value") != 42:
+            result = {
+                "status": "error",
+                "error_code": error_code,
+                "detail": "wrong_data",
+                "data": data,
+                "latency": f"{latency:.2f}s",
+            }
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=wrong_data latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
+
+            try:
+                create_live_incident(
+                    error_code=error_code,
+                    route="/test-fault/external-api",
+                    reason="wrong_data",
+                    latency=latency,
+                )
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
+        else:
+            result = {
+                "status": "ok",
+                "error_code": None,
+                "data": data,
+                "latency": f"{latency:.2f}s",
+            }
 
     except requests.exceptions.Timeout:
         latency = time.time() - start
@@ -166,6 +193,31 @@ def test_fault_external_api():
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
+    except (ValueError, requests.exceptions.JSONDecodeError):
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "wrong_data",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=wrong_data latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="wrong_data",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
+
     except requests.exceptions.ConnectionError:
         latency = time.time() - start
         result = {
@@ -204,10 +256,9 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # INTENTIONAL BUG: pg_sleep(5) with a 2-second statement timeout
-        # The timeout is shorter than the sleep, so this always fails
-        db.session.execute(text("SET LOCAL statement_timeout = \\'2s\\';"))
-        db.session.execute(text("SELECT pg_sleep(5);"))
+        # INTENTIONAL BUG: ~5.5s statement timeout against a longer pg_sleep.
+        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
+        db.session.execute(text("SELECT pg_sleep(10);"))
         latency = time.time() - start
         result = {
             "status": "ok",
@@ -225,16 +276,16 @@ def test_fault_db_timeout():
         }
         msg = (
             f"{error_code} route=/test-fault/db-timeout "
-            f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
+            f"reason=db_statement_timeout latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
-        current_app.logger.error(f"db_error={e!s}")
+        current_app.logger.error(msg)
 
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/db-timeout",
-                reason="db_timeout_or_pool_exhaustion",
+                reason="db_statement_timeout",
                 latency=latency,
             )
         except Exception:

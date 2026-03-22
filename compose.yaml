@@ -127,7 +127,7 @@ services:
     container_name: "mock_api"
     command: sh -c "pip install flask && python /mock_api.py"
     environment:
-      API_FAULT_MODE: "${API_FAULT_MODE:-latency,error}"
+      API_FAULT_MODE: "${API_FAULT_MODE:-latency,wrong_data}"
     profiles: ["web"]
     restart: "${DOCKER_RESTART_POLICY:-unless-stopped}"
     stop_grace_period: "3s"

@@ -420,6 +420,22 @@
       transform: translateY(-2px);
     }
 
+    .fault-card__button[aria-busy="true"] {
+      opacity: 0.74;
+      cursor: progress;
+      transform: none;
+    }
+
+    .fault-card__status {
+      position: relative;
+      z-index: 1;
+      min-height: 1.4rem;
+      margin-top: 12px;
+      color: rgba(220, 229, 255, 0.72);
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+
     .page-home.js-motion .fault-shell [data-reveal] {
       opacity: 0;
       transform: translateY(26px);
@@ -516,7 +532,7 @@
               <span>External dependency path</span>
               <span class="signal-card__tag signal-card__tag--api">API</span>
             </div>
-            <div class="signal-card__body">Exercises timeout, retry, and upstream failure handling against the mock API service.</div>
+            <div class="signal-card__body">Exercises timeout and bad-payload handling against the mock API service.</div>
             <div class="signal-card__line"></div>
             <div class="signal-card__meta">
               <span>Timeout budget</span>
@@ -526,52 +542,54 @@
 
           <div class="signal-card">
             <div class="signal-card__heading">
-              <span>Pool exhaustion path</span>
+              <span>Statement timeout path</span>
               <span class="signal-card__tag signal-card__tag--db">DB</span>
             </div>
-            <div class="signal-card__body">Exercises slow-query and connection-pool pressure on the database-backed request path.</div>
+            <div class="signal-card__body">Exercises a real database statement timeout after a visibly slow query window.</div>
             <div class="signal-card__line"></div>
             <div class="signal-card__meta">
               <span>Pressure source</span>
-              <span>pg_sleep(5)</span>
+              <span>pg_sleep(10)</span>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    {% if result %}
-      <section class="result-panel {% if result.status == 'error' %}result-panel--danger{% else %}result-panel--success{% endif %}" data-reveal style="--reveal-delay: 60ms;">
-        <div class="result-title">
-          {% if result.status == 'error' %}
-            Fault triggered
-          {% elif result.status == 'disabled' %}
-            Fault injection disabled
-          {% else %}
-            No fault detected
-          {% endif %}
-        </div>
+    <div id="fault-result-slot">
+      {% if result %}
+        <section class="result-panel {% if result.status == 'error' %}result-panel--danger{% else %}result-panel--success{% endif %}" data-reveal style="--reveal-delay: 60ms;">
+          <div class="result-title">
+            {% if result.status == 'error' %}
+              Fault triggered
+            {% elif result.status == 'disabled' %}
+              Fault injection disabled
+            {% else %}
+              No fault detected
+            {% endif %}
+          </div>
 
-        <div class="result-grid">
-          <div class="result-item">
-            <div class="result-item__label">Status</div>
-            <div class="result-item__value">{{ result.status }}</div>
+          <div class="result-grid">
+            <div class="result-item">
+              <div class="result-item__label">Status</div>
+              <div class="result-item__value">{{ result.status }}</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Error Code</div>
+              <div class="result-item__value">{{ result.error_code or 'None' }}</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Detail</div>
+              <div class="result-item__value">{{ result.detail or result.message or 'No additional detail captured.' }}</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Latency / Data</div>
+              <div class="result-item__value">{{ result.latency or result.data or result.table_checked or 'Not reported' }}</div>
+            </div>
           </div>
-          <div class="result-item">
-            <div class="result-item__label">Error Code</div>
-            <div class="result-item__value">{{ result.error_code or 'None' }}</div>
-          </div>
-          <div class="result-item">
-            <div class="result-item__label">Detail</div>
-            <div class="result-item__value">{{ result.detail or result.message or 'No additional detail captured.' }}</div>
-          </div>
-          <div class="result-item">
-            <div class="result-item__label">Latency / Data</div>
-            <div class="result-item__value">{{ result.latency or result.data or result.table_checked or 'Not reported' }}</div>
-          </div>
-        </div>
-      </section>
-    {% endif %}
+        </section>
+      {% endif %}
+    </div>
 
     <section class="fault-grid">
       <article class="fault-card" data-reveal style="--reveal-delay: 80ms;">
@@ -586,11 +604,12 @@
           <span>Route</span>
           <span>/test-fault/run</span>
         </div>
-        <form method="POST" action="/test-fault/run">
+        <form method="POST" action="/test-fault/run" data-fault-form>
           <button type="submit" class="fault-card__button fault-card__button--sql">
             Run Faulty Query
           </button>
         </form>
+        <div class="fault-card__status" data-fault-status aria-live="polite"></div>
       </article>
 
       <article class="fault-card" data-reveal style="--reveal-delay: 140ms;">
@@ -598,37 +617,137 @@
         <h2 class="fault-card__title">External API Latency Simulation</h2>
         <p class="fault-card__body">
           Calls the configured mock API endpoint at <code>MOCK_API_BASE_URL/data</code>
-          (defaulting to <code>mock_api:5001/data</code> locally), which can inject 2-8 second
-          latency and upstream 500 responses so the external dependency path can be exercised.
+          (defaulting to <code>mock_api:5001/data</code> locally), which can inject a timeout
+          over 3 seconds or return the wrong payload so the external dependency path can be exercised.
         </p>
         <div class="fault-card__meta">
           <span>Route</span>
           <span>/test-fault/external-api</span>
         </div>
-        <form method="POST" action="/test-fault/external-api">
+        <form method="POST" action="/test-fault/external-api" data-fault-form>
           <button type="submit" class="fault-card__button fault-card__button--api">
             Call External API
           </button>
         </form>
+        <div class="fault-card__status" data-fault-status aria-live="polite"></div>
       </article>
 
       <article class="fault-card" data-reveal style="--reveal-delay: 200ms;">
         <div class="fault-card__number">03</div>
         <h2 class="fault-card__title">Database Timeout Simulation</h2>
         <p class="fault-card__body">
-          Executes <code>SELECT pg_sleep(5)</code> to create slow-query pressure and demonstrate
-          how pool exhaustion or timeout conditions move through the incident flow.
+          Executes <code>SELECT pg_sleep(10)</code> behind a <code>5500ms</code> statement timeout
+          so the request visibly hangs for a bit over 5 seconds before PostgreSQL cancels it.
         </p>
         <div class="fault-card__meta">
           <span>Route</span>
           <span>/test-fault/db-timeout</span>
         </div>
-        <form method="POST" action="/test-fault/db-timeout">
+        <form method="POST" action="/test-fault/db-timeout" data-fault-form>
           <button type="submit" class="fault-card__button fault-card__button--db">
             Run Slow DB Query
           </button>
         </form>
+        <div class="fault-card__status" data-fault-status aria-live="polite"></div>
       </article>
     </section>
   </div>
+
+  <script>
+    const faultResultSlot = document.getElementById('fault-result-slot');
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function setFaultStatus(form, message) {
+      const status = form.parentElement.querySelector('[data-fault-status]');
+      if (status) {
+        status.textContent = message || '';
+      }
+    }
+
+    function setFaultButtonBusy(button, isBusy, idleLabel) {
+      if (!button) return;
+      button.disabled = isBusy;
+      button.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+      button.textContent = isBusy ? 'Running...' : idleLabel;
+    }
+
+    function showInlineFaultResult(markup) {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(markup, 'text/html');
+      const incomingSlot = doc.getElementById('fault-result-slot');
+
+      if (!incomingSlot || !faultResultSlot) return;
+
+      faultResultSlot.innerHTML = incomingSlot.innerHTML;
+
+      const panel = faultResultSlot.querySelector('.result-panel');
+      if (panel) {
+        panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function showInlineFaultError(message) {
+      if (!faultResultSlot) return;
+
+      faultResultSlot.innerHTML = `
+        <section class="result-panel result-panel--danger">
+          <div class="result-title">Fault request failed</div>
+          <div class="result-grid">
+            <div class="result-item">
+              <div class="result-item__label">Status</div>
+              <div class="result-item__value">client_error</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Error Code</div>
+              <div class="result-item__value">None</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Detail</div>
+              <div class="result-item__value">${escapeHtml(message)}</div>
+            </div>
+            <div class="result-item">
+              <div class="result-item__label">Latency / Data</div>
+              <div class="result-item__value">Not reported</div>
+            </div>
+          </div>
+        </section>
+      `;
+    }
+
+    document.querySelectorAll('[data-fault-form]').forEach((form) => {
+      const button = form.querySelector('button[type="submit"]');
+      const idleLabel = button ? button.textContent.trim() : 'Run Fault';
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        setFaultStatus(form, 'Running fault injection...');
+        setFaultButtonBusy(button, true, idleLabel);
+
+        try {
+          const response = await fetch(form.action, {
+            method: form.method || 'POST',
+            headers: {
+              'X-Requested-With': 'fetch',
+            },
+          });
+          const html = await response.text();
+          showInlineFaultResult(html);
+          setFaultStatus(form, response.ok ? 'Completed without a page reload.' : 'Fault captured without a page reload.');
+        } catch (error) {
+          showInlineFaultError(error.message || 'Unknown client error');
+          setFaultStatus(form, 'Request failed before the server responded.');
+        } finally {
+          setFaultButtonBusy(button, false, idleLabel);
+        }
+      });
+    });
+  </script>
 {% endblock %}

@@ -251,7 +251,7 @@ def get_mock_incidents() -> list[dict]:
             "id": "MOCK-0001",
             "timestamp_opened": now - timedelta(minutes=42),
             "timestamp_resolved": now - timedelta(minutes=18),
-            "incident_type": "External API Timeout",
+            "incident_type": "External API Degradation",
             "severity": "critical",
             "status": "resolved",
             "route": "/test-fault/external-api",
@@ -297,7 +297,7 @@ def get_mock_incidents() -> list[dict]:
             "id": "MOCK-0002",
             "timestamp_opened": now - timedelta(hours=2, minutes=10),
             "timestamp_resolved": None,
-            "incident_type": "Database Timeout",
+            "incident_type": "Database Statement Timeout",
             "severity": "critical",
             "status": "in_progress",
             "route": "/test-fault/db-timeout",
@@ -306,7 +306,7 @@ def get_mock_incidents() -> list[dict]:
                 "latency_p95": "5.00s",
                 "latency_p95_value": 5.0,
                 "endpoint": "/test-fault/db-timeout",
-                "log_marker": "db_timeout_or_pool_exhaustion",
+                "log_marker": "db_statement_timeout",
                 "affected_requests": 85,
             },
             "breadcrumbs": {
@@ -495,6 +495,19 @@ def _sort_incidents_for_dashboard(incidents: list[dict]) -> list[dict]:
     )
 
 
+def _incident_merge_key(incident: dict) -> tuple[str, str, str]:
+    """Return a merge key that keeps distinct fault reasons separate."""
+    symptoms = incident.get("symptoms") or {}
+    marker = str(symptoms.get("log_marker") or "").strip()
+    error_code = str(incident.get("error_code") or "").strip()
+    route = str(incident.get("route") or "").strip()
+
+    if marker in {"", "-", "—", error_code}:
+        marker = ""
+
+    return (error_code, route, marker)
+
+
 # This function handles the sync status work for this file.
 def _sync_status(incidents: list[dict]) -> list[dict]:
     """Derive status from verification result so it stays in sync.
@@ -596,42 +609,72 @@ def _auto_resolve_incident(inc: dict, now: datetime) -> None:
 def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
     """Merge live and CloudWatch incidents, deduplicating across sources.
 
-    CloudWatch incidents that match a live incident by (error_code, route)
-    replace the live one if they have more lifecycle progress. Live incidents
-    with no CloudWatch match are kept as-is, and vice versa.
+    CloudWatch incidents only replace live ones when they look like the same
+    occurrence: same merge key and a reasonably close opened timestamp. This
+    keeps fresh demo injections from being hidden by stale CloudWatch history.
     """
     _STATUS_RANK = {"detected": 0, "in_progress": 1, "resolved": 2}
+    merge_window = timedelta(
+        minutes=int(os.getenv("INCIDENT_SOURCE_MERGE_WINDOW_MINUTES", "20"))
+    )
 
-    # Index CloudWatch incidents by (error_code, route) for matching
-    cw_by_key: dict[tuple[str, str], list[dict]] = {}
+    def _opened_at(incident: dict) -> datetime:
+        return incident.get("timestamp_opened") or datetime.min
+
+    def _same_occurrence(left: dict, right: dict) -> bool:
+        left_opened = left.get("timestamp_opened")
+        right_opened = right.get("timestamp_opened")
+        if not left_opened or not right_opened:
+            return True
+        return abs(left_opened - right_opened) <= merge_window
+
+    # Index CloudWatch incidents by merge key for matching.
+    cw_by_key: dict[tuple[str, str, str], list[dict]] = {}
     for inc in cloudwatch:
-        key = (inc.get("error_code", ""), inc.get("route", ""))
+        key = _incident_merge_key(inc)
         cw_by_key.setdefault(key, []).append(inc)
 
     merged: list[dict] = []
-    matched_cw_keys: set[tuple[str, str]] = set()
+    matched_cw_ids: set[str] = set()
 
     for live_inc in live:
-        key = (live_inc.get("error_code", ""), live_inc.get("route", ""))
-        cw_matches = cw_by_key.get(key, [])
+        key = _incident_merge_key(live_inc)
+        cw_matches = [
+            inc for inc in cw_by_key.get(key, [])
+            if _same_occurrence(live_inc, inc)
+        ]
         if cw_matches:
-            matched_cw_keys.add(key)
-            # Pick the CloudWatch incident with the most progress
             best_cw = max(
                 cw_matches,
-                key=lambda i: _STATUS_RANK.get(i.get("status", ""), 0),
+                key=lambda i: (
+                    _STATUS_RANK.get(i.get("status", ""), 0),
+                    _opened_at(i),
+                ),
             )
-            cw_rank = _STATUS_RANK.get(best_cw.get("status", ""), 0)
-            live_rank = _STATUS_RANK.get(live_inc.get("status", ""), 0)
-            # Use the more progressed one; if tied, prefer CloudWatch (richer data)
-            merged.append(best_cw if cw_rank >= live_rank else live_inc)
+            live_score = (
+                _STATUS_RANK.get(live_inc.get("status", ""), 0),
+                _opened_at(live_inc),
+            )
+            cw_score = (
+                _STATUS_RANK.get(best_cw.get("status", ""), 0),
+                _opened_at(best_cw),
+            )
+
+            if cw_score > live_score and best_cw.get("id") not in matched_cw_ids:
+                merged.append(best_cw)
+                if best_cw.get("id"):
+                    matched_cw_ids.add(best_cw["id"])
+            else:
+                merged.append(live_inc)
         else:
             merged.append(live_inc)
 
     # Add CloudWatch incidents that had no live match
-    for key, cw_list in cw_by_key.items():
-        if key not in matched_cw_keys:
-            merged.extend(cw_list)
+    for cw_list in cw_by_key.values():
+        for cw_inc in cw_list:
+            if cw_inc.get("id") in matched_cw_ids:
+                continue
+            merged.append(cw_inc)
 
     merged.sort(
         key=lambda i: i.get("timestamp_opened") or datetime.min,

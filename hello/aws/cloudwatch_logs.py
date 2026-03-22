@@ -281,6 +281,7 @@ def fetch_recent_events(
 
 _FAULT_RE = re.compile(r"\b(FAULT_[A-Z0-9_]+)\b")
 _ROUTE_RE = re.compile(r"\broute=([^\s]+)")
+_REASON_RE = re.compile(r"\breason=([^\s]+)")
 _LATENCY_RE = re.compile(r"\blatency=([0-9]+\.[0-9]+)")
 _DASHBOARD_RE = re.compile(r"^DASHBOARD\s+(.+?)\s+failed:")
 _START_REQ_RE = re.compile(r"^START RequestId:\s*([a-f0-9-]+)")
@@ -543,9 +544,9 @@ def _guess_severity(error_code: str, message: str) -> str:
 def _guess_type(error_code: str) -> str:
     ec = error_code.upper()
     if "EXTERNAL_API" in ec:
-        return "External API Timeout"
+        return "External API Degradation"
     if "DB" in ec:
-        return "Database Issues"
+        return "Database Statement Timeout"
     if "SQL" in ec:
         return "SQL Errors"
     if "CONNECTION" in ec:
@@ -612,6 +613,13 @@ def _extract_route(message: str) -> str | None:
     return None
 
 
+def _extract_reason(message: str) -> str | None:
+    m = _REASON_RE.search(message)
+    if m:
+        return m.group(1)
+    return None
+
+
 # This function handles the extract latency s work for this file.
 def _extract_latency_s(message: str) -> float | None:
     m = _LATENCY_RE.search(message)
@@ -675,12 +683,13 @@ def build_incidents_from_events(
         if (has_fault and has_route) or is_dashboard_failure or has_error_word or has_traceback:
             filtered.append(ev)
 
-    # Group by (error_code, route) so repeated lines collapse into a single incident.
-    buckets: dict[tuple[str, str], list[CloudWatchLogEvent]] = {}
+    # Group by (error_code, route, reason) so distinct failure modes stay visible.
+    buckets: dict[tuple[str, str, str], list[CloudWatchLogEvent]] = {}
     for ev in filtered:
         error_code = _extract_error_code(ev.message)
         route = _extract_route(ev.message) or "-"
-        buckets.setdefault((error_code, route), []).append(ev)
+        reason = _extract_reason(ev.message) or error_code
+        buckets.setdefault((error_code, route, reason), []).append(ev)
 
     # Sort buckets by most recent event.
     bucket_items = sorted(
@@ -690,7 +699,7 @@ def build_incidents_from_events(
     )
 
     incidents: list[dict[str, Any]] = []
-    for (error_code, route), evs in bucket_items[:max_incidents]:
+    for (error_code, route, reason), evs in bucket_items[:max_incidents]:
         evs.sort(key=lambda e: e.timestamp_ms, reverse=True)
         newest = evs[0]
         count = len(evs)
@@ -702,7 +711,7 @@ def build_incidents_from_events(
 
         severity = _guess_severity(error_code, newest.message)
         incident_type = _guess_type(error_code)
-        incident_id = f"CW-{_stable_id(error_code, route, str(newest.timestamp_ms))}"
+        incident_id = f"CW-{_stable_id(error_code, route, reason, str(newest.timestamp_ms))}"
 
         incidents.append(
             {
@@ -722,7 +731,7 @@ def build_incidents_from_events(
                         float(latency) if latency is not None else 0.0
                     ),
                     "endpoint": route,
-                    "log_marker": error_code,
+                    "log_marker": reason,
                     "affected_requests": count,
                 },
                 "breadcrumbs": {

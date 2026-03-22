@@ -59,13 +59,13 @@ def test_incident_dedupe_key_keeps_distinct_reasons_separate():
         "/ecs/cream-task",
         "ecs/app/1",
     )
-    http_incident = fault_router_lambda.build_incident(
+    wrong_data_incident = fault_router_lambda.build_incident(
         {
             "id": "evt-2",
             "timestamp": 1_700_000_005_000,
             "message": (
                 "FAULT_EXTERNAL_API_LATENCY route=/test-fault/external-api "
-                "reason=upstream_failure latency=0.50"
+                "reason=wrong_data latency=0.50"
             ),
         },
         "/ecs/cream-task",
@@ -73,7 +73,7 @@ def test_incident_dedupe_key_keeps_distinct_reasons_separate():
     )
 
     assert fault_router_lambda.incident_dedupe_key(timeout_incident) != (
-        fault_router_lambda.incident_dedupe_key(http_incident)
+        fault_router_lambda.incident_dedupe_key(wrong_data_incident)
     )
 
 

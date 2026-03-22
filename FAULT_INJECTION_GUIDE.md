@@ -69,11 +69,11 @@ db.session.execute(text("SELECT FROM"))  # invalid SQL on purpose
 ### What it does
 Calls the configured mock external API (`$MOCK_API_BASE_URL/data`, default
 `http://mock_api:5001/data` locally) with a 3-second timeout.
-The mock API (`mock_api.py`) is configured with `API_FAULT_MODE=latency,error` which causes:
-- **60% chance** of a 2-8 second random delay (causes timeout when delay > 3s)
-- **30% chance** of returning HTTP 500 (`{"error": "upstream failure"}`)
+The mock API (`mock_api.py`) is configured with `API_FAULT_MODE=latency,wrong_data` which causes:
+- **60% chance** of a 3.4-8 second delay (causes timeout because delay > 3s)
+- **30% chance** of returning malformed data with HTTP 200 (`{"value": "forty-two"}`)
 
-Combined, **~70% of requests fail** — either from timeout or upstream HTTP 500.
+Combined, **~90% of requests fail** — either from timeout or bad upstream data.
 
 ### How to replicate
 ```bash
@@ -84,13 +84,13 @@ Run it multiple times — it's probabilistic, not deterministic.
 
 ### Expected behavior
 On **timeout**: Returns HTTP 504, creates incident with reason `external_timeout`
-On **upstream HTTP 500**: Returns HTTP 504, creates incident with reason `upstream_failure`
+On **wrong data**: Returns HTTP 504, creates incident with reason `wrong_data`
 On **success** (~30%): Returns HTTP 200 with `{"value": 42}`
 
 ### Key faulty line
 ```python
 mock_api_base_url = os.getenv("MOCK_API_BASE_URL", "http://mock_api:5001").rstrip("/")
-r = requests.get(f"{mock_api_base_url}/data", timeout=3)  # 3s timeout vs 2-8s mock delay
+r = requests.get(f"{mock_api_base_url}/data", timeout=3)  # 3s timeout vs >3s mock delay
 ```
 
 ---
@@ -101,8 +101,9 @@ r = requests.get(f"{mock_api_base_url}/data", timeout=3)  # 3s timeout vs 2-8s m
 **File:** `hello/page/views.py` -> `test_fault_db_timeout()`
 
 ### What it does
-Sets a 2-second statement timeout then runs `SELECT pg_sleep(5)`. The timeout is shorter
-than the sleep, so PostgreSQL always cancels the query and raises an error.
+Sets a 5.5-second statement timeout then runs `SELECT pg_sleep(10)`. The timeout is shorter
+than the sleep, so PostgreSQL waits a bit over 5 seconds and then cancels the query with a
+real statement-timeout error.
 
 ### How to replicate
 ```bash
@@ -110,16 +111,16 @@ curl -X POST http://localhost:8000/test-fault/db-timeout
 ```
 
 ### Expected behavior
-1. `SET LOCAL statement_timeout = '2s'` sets a 2-second limit
-2. `SELECT pg_sleep(5)` starts but is cancelled after 2 seconds
+1. `SET LOCAL statement_timeout = '5500ms'` sets a ~5.5-second limit
+2. `SELECT pg_sleep(10)` starts but is cancelled after ~5.5 seconds
 3. The error is caught, rolled back, and logged to stderr
 4. A live incident is created with error_code `FAULT_DB_TIMEOUT`
 5. Returns HTTP 500
 
 ### Key faulty lines
 ```python
-db.session.execute(text("SET LOCAL statement_timeout = '2s';"))
-db.session.execute(text("SELECT pg_sleep(5);"))  # always times out (5s > 2s)
+db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
+db.session.execute(text("SELECT pg_sleep(10);"))  # always times out (~10s > 5.5s)
 ```
 
 ---
@@ -163,7 +164,7 @@ This triggers the CI/CD pipeline which redeploys the faulty code.
 1. Check `ENABLE_FAULT_INJECTION` is `True` in `config/settings.py`
 2. Check `hello/page/views.py` has the faulty code (not a fixed version)
 3. Check `git log --oneline -10` for commits like "[FAULT:...]" that may have fixed the faults
-4. For DB timeout: ensure `SET LOCAL statement_timeout = '2s'` precedes `pg_sleep(5)`
+4. For DB timeout: ensure `SET LOCAL statement_timeout = '5500ms'` precedes `pg_sleep(10)`
 
 ### Incidents not appearing on dashboard?
 1. Check PostgreSQL is running: `docker compose logs postgres`

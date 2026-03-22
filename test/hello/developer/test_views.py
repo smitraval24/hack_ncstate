@@ -10,6 +10,7 @@ from hello.developer.views import (
     _collect_resettable_fault_codes,
     _fault_codes_differing_from_template,
     _filter_incidents_after_demo_reset,
+    _merge_incidents,
     _restore_faulty_functions,
     build_dashboard_aggregates,
     build_incident_trend,
@@ -24,16 +25,19 @@ def _make_incident(
     opened_at: datetime,
     resolved_at: datetime | None,
     status: str,
+    *,
+    log_marker: str = "external_timeout",
 ) -> dict:
     return {
         "id": incident_id,
         "timestamp_opened": opened_at,
         "timestamp_resolved": resolved_at,
-        "incident_type": "External API Timeout",
+        "incident_type": "External API Degradation",
         "severity": "high",
         "status": status,
         "route": "/test-fault/external-api",
         "error_code": "FAULT_EXTERNAL_API_LATENCY",
+        "symptoms": {"log_marker": log_marker},
         "verification": {"success": status == "resolved"},
         "remediation": {"execution_timestamp": None},
     }
@@ -66,8 +70,8 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             FAULTY_VIEWS_CONTENT
             .replace('db.session.execute(text("SELECT FROM"))', 'db.session.execute(text("SELECT 1"))', 1)
             .replace(
-                "db.session.execute(text(\"SET LOCAL statement_timeout = \\'2s\\';\"))",
-                "db.session.execute(text(\"SET LOCAL statement_timeout = \\'10s\\';\"))",
+                'db.session.execute(text("SET LOCAL statement_timeout = \'5500ms\';"))',
+                'db.session.execute(text("SET LOCAL statement_timeout = \'10s\';"))',
                 1,
             )
         )
@@ -116,6 +120,27 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         filtered = _filter_incidents_after_demo_reset(incidents)
 
         assert [incident["id"] for incident in filtered] == ["after", "unknown"]
+
+    def test_merge_incidents_keeps_new_live_incident_when_cloudwatch_match_is_stale(self):
+        now = datetime.now().replace(microsecond=0)
+        live_incident = _make_incident(
+            "LIVE-0001",
+            now,
+            None,
+            "detected",
+            log_marker="wrong_data",
+        )
+        cloudwatch_incident = _make_incident(
+            "CW-0001",
+            now - timedelta(hours=12),
+            now - timedelta(hours=12),
+            "resolved",
+            log_marker="wrong_data",
+        )
+
+        merged = _merge_incidents([live_incident], [cloudwatch_incident])
+
+        assert [incident["id"] for incident in merged] == ["LIVE-0001", "CW-0001"]
 
     def test_build_incident_trend_aggregates_last_seven_days(self):
         now = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
@@ -168,7 +193,7 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert aggregates["severity_counts"]["high"] == 2
         assert aggregates["severity_counts"]["medium"] == 1
         assert "/test-fault/external-api" in aggregates["route_impact"]["labels"]
-        assert "External API Timeout" in aggregates["type_distribution"]["labels"]
+        assert "External API Degradation" in aggregates["type_distribution"]["labels"]
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incidents_dashboard_renders_control_room_theme(self, mock_fetch_incidents):

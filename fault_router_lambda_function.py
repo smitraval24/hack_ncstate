@@ -157,18 +157,18 @@ def invoke_claude(incident, analysis):
         ),
         "FAULT_EXTERNAL_API_LATENCY": (
             "The function test_fault_external_api() calls the mock API with a 3-second "
-            "timeout that is too short (the API delays 2-8 seconds) and may see transient "
-            "HTTP 500s. Preserve the env-based MOCK_API_BASE_URL lookup (fallback "
-            "http://mock_api:5001), increase the timeout to at least 10 seconds, and add "
-            "retry logic with backoff for transient timeout / HTTP 500 failures. The goal "
-            "is for the call to succeed reliably after remediation."
+            "timeout that is too short (the API can exceed 3 seconds) and may return "
+            "malformed data instead of {'value': 42}. Preserve the env-based "
+            "MOCK_API_BASE_URL lookup (fallback http://mock_api:5001), increase the timeout "
+            "to at least 10 seconds, validate the payload, and make the call succeed "
+            "reliably after remediation."
         ),
         "FAULT_DB_TIMEOUT": (
-            "The function test_fault_db_timeout() sets statement_timeout='2s' then runs "
-            "pg_sleep(5), which always times out. Fix by either removing the "
-            "statement_timeout, increasing it to more than 5 seconds, or reducing the "
-            "pg_sleep to less than the timeout. The goal is for the query to complete "
-            "without a timeout error."
+            "The function test_fault_db_timeout() sets statement_timeout='5500ms' then runs "
+            "pg_sleep(10), so the request hangs for a bit over 5 seconds before PostgreSQL "
+            "cancels it. Fix by either removing the statement_timeout, increasing it above "
+            "the sleep duration, or reducing the pg_sleep so the query completes without a "
+            "timeout error."
         ),
     }
     fix_hint = fault_fix_hints.get(incident["fault_code"], "Fix the identified issue.")

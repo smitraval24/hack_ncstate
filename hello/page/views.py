@@ -6,9 +6,8 @@ import time
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, current_app, request
+from flask import Blueprint, current_app, render_template
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, TimeoutError
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
@@ -60,23 +59,15 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # SECURITY FIX: Use parameterized query to prevent SQL injection
-        # This query safely selects a constant value to test database connectivity
-        # Using bound parameters prevents any potential SQL injection attacks
-        query = text("SELECT :test_value as test_result")
-        db.session.execute(query, {"test_value": 1})
-        db.session.commit()
-        
-        # Log successful database test
-        current_app.logger.info("Database connectivity test passed successfully")
-        
-    except Exception as e:
+        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
+        db.session.execute(text("SELECT FROM"))
+    except Exception:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=database_connection_test_failed error={str(e)[:100]}"
+            f"reason=invalid_sql_executed"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -85,7 +76,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="database_connection_test_failed",
+                reason="invalid_sql_executed",
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
@@ -103,131 +94,146 @@ def test_fault_external_api():
 
     start = time.time()
 
-    # Implement retry logic with exponential backoff
-    max_retries = 3
-    base_timeout = 10  # Increased timeout to handle expected 2-8s delays
-    backoff_factor = 2
-    
-    for attempt in range(max_retries):
-        try:
-            # Calculate timeout for current attempt: 10s, 20s, 40s
-            timeout = base_timeout * (backoff_factor ** attempt)
-            current_app.logger.info(f"API call attempt {attempt + 1}/{max_retries} with timeout {timeout}s")
-            
-            r = requests.get(f"{mock_api_base_url}/data", timeout=timeout)
-            latency = time.time() - start
-            current_app.logger.info(f"external_call_latency={latency:.2f}")
-            r.raise_for_status()
+    try:
+        # INTENTIONAL BUG: 3s timeout against mock API with 60% chance of >3s delay
+        # and 30% chance of malformed data.
+        r = requests.get(f"{mock_api_base_url}/data", timeout=3)
+        latency = time.time() - start
+        current_app.logger.info("external_call_latency=%.2f", latency)
+        r.raise_for_status()
+        data = r.json()
+
+        if not isinstance(data, dict) or data.get("value") != 42:
+            result = {
+                "status": "error",
+                "error_code": error_code,
+                "detail": "wrong_data",
+                "data": data,
+                "latency": f"{latency:.2f}s",
+            }
+            msg = (
+                f"{error_code} route=/test-fault/external-api "
+                f"reason=wrong_data latency={latency:.2f}"
+            )
+            print(msg, file=sys.stderr)
+            current_app.logger.error(msg)
+
+            try:
+                create_live_incident(
+                    error_code=error_code,
+                    route="/test-fault/external-api",
+                    reason="wrong_data",
+                    latency=latency,
+                )
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
+        else:
             result = {
                 "status": "ok",
                 "error_code": None,
-                "data": r.json(),
+                "data": data,
                 "latency": f"{latency:.2f}s",
-                "attempts": attempt + 1,
             }
-            break  # Success, exit retry loop
 
-        except requests.exceptions.Timeout:
-            latency = time.time() - start
-            if attempt < max_retries - 1:
-                # Not the last attempt, wait before retrying
-                wait_time = 1 * (backoff_factor ** attempt)  # 1s, 2s, 4s
-                current_app.logger.warning(f"Timeout on attempt {attempt + 1}, retrying in {wait_time}s")
-                time.sleep(wait_time)
-                continue
-            else:
-                # Last attempt failed
-                result = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "detail": "timeout_after_retries",
-                    "latency": f"{latency:.2f}s",
-                    "attempts": max_retries,
-                }
-                msg = (
-                    f"{error_code} route=/test-fault/external-api "
-                    f"reason=external_timeout_final latency={latency:.2f} attempts={max_retries}"
-                )
-                print(msg, file=sys.stderr)
-                current_app.logger.error(msg)
+    except requests.exceptions.Timeout:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "timeout",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=external_timeout latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
-                try:
-                    create_live_incident(
-                        error_code=error_code,
-                        route="/test-fault/external-api",
-                        reason="external_timeout_final",
-                        latency=latency,
-                    )
-                except Exception:
-                    current_app.logger.exception("Failed to create incident for %s", error_code)
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="external_timeout",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
 
-        except requests.exceptions.HTTPError:
-            latency = time.time() - start
-            if attempt < max_retries - 1:
-                # Not the last attempt, wait before retrying
-                wait_time = 1 * (backoff_factor ** attempt)
-                current_app.logger.warning(f"HTTP error on attempt {attempt + 1}, retrying in {wait_time}s")
-                time.sleep(wait_time)
-                continue
-            else:
-                # Last attempt failed
-                result = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "detail": "upstream_500_after_retries",
-                    "latency": f"{latency:.2f}s",
-                    "attempts": max_retries,
-                }
-                msg = (
-                    f"{error_code} route=/test-fault/external-api "
-                    f"reason=upstream_failure_final latency={latency:.2f} attempts={max_retries}"
-                )
-                print(msg, file=sys.stderr)
-                current_app.logger.error(msg)
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=upstream_failure latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
-                try:
-                    create_live_incident(
-                        error_code=error_code,
-                        route="/test-fault/external-api",
-                        reason="upstream_failure_final",
-                        latency=latency,
-                    )
-                except Exception:
-                    current_app.logger.exception("Failed to create incident for %s", error_code)
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="upstream_failure",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
 
-        except requests.exceptions.ConnectionError:
-            latency = time.time() - start
-            if attempt < max_retries - 1:
-                # Not the last attempt, wait before retrying
-                wait_time = 1 * (backoff_factor ** attempt)
-                current_app.logger.warning(f"Connection error on attempt {attempt + 1}, retrying in {wait_time}s")
-                time.sleep(wait_time)
-                continue
-            else:
-                # Last attempt failed
-                result = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "detail": "connection_refused_after_retries",
-                    "latency": f"{latency:.2f}s",
-                    "attempts": max_retries,
-                }
-                msg = (
-                    f"{error_code} route=/test-fault/external-api "
-                    f"reason=connection_error_final latency={latency:.2f} attempts={max_retries}"
-                )
-                print(msg, file=sys.stderr)
-                current_app.logger.error(msg)
+    except (ValueError, requests.exceptions.JSONDecodeError):
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "wrong_data",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=wrong_data latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
-                try:
-                    create_live_incident(
-                        error_code=error_code,
-                        route="/test-fault/external-api",
-                        reason="connection_error_final",
-                        latency=latency,
-                    )
-                except Exception:
-                    current_app.logger.exception("Failed to create incident for %s", error_code)
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="wrong_data",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
+
+    except requests.exceptions.ConnectionError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "connection_refused",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=connection_error latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="connection_error",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
 
     return _render_fault(result), (504 if result["status"] == "error" else 200)
 
@@ -238,96 +244,43 @@ def test_fault_db_timeout():
 
     error_code = "FAULT_DB_TIMEOUT"
     result = {"status": "ok", "error_code": None}
+
     start = time.time()
 
-    # Implement retry logic with exponential backoff for database operations
-    max_retries = 3
-    base_delay = 0.5  # Start with 500ms delay
-    backoff_factor = 2
+    try:
+        # INTENTIONAL BUG: ~5.5s statement timeout against a longer pg_sleep.
+        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
+        db.session.execute(text("SELECT pg_sleep(10);"))
+        latency = time.time() - start
+        result = {
+            "status": "ok",
+            "error_code": None,
+            "latency": f"{latency:.2f}s",
+        }
+    except Exception as e:
+        db.session.rollback()
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": str(e)[:200],
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/db-timeout "
+            f"reason=db_statement_timeout latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
 
-    for attempt in range(max_retries):
         try:
-            # Set shorter statement timeout to fail fast and allow retries
-            timeout_query = text("SET LOCAL statement_timeout = :timeout_value")
-            db.session.execute(timeout_query, {"timeout_value": "5s"})
-            
-            # Use lightweight query for health check - just test basic connectivity
-            # This is much more efficient than querying pg_stat_activity
-            health_query = text("SELECT 1 as health_check")
-            result_set = db.session.execute(health_query)
-            health_result = result_set.scalar()
-            
-            # Commit the transaction properly
-            db.session.commit()
-            
-            latency = time.time() - start
-            result = {
-                "status": "ok",
-                "error_code": None,
-                "latency": f"{latency:.2f}s",
-                "detail": "database_connection_healthy",
-                "attempts": attempt + 1
-            }
-            
-            current_app.logger.info(f"Database health check completed successfully in {latency:.2f}s after {attempt + 1} attempts")
-            break  # Success, exit retry loop
-            
-        except (OperationalError, TimeoutError) as e:
-            db.session.rollback()
-            latency = time.time() - start
-            
-            if attempt < max_retries - 1:
-                # Not the last attempt, wait before retrying with exponential backoff
-                delay = base_delay * (backoff_factor ** attempt)  # 0.5s, 1s, 2s
-                current_app.logger.warning(f"Database timeout on attempt {attempt + 1}/{max_retries}, retrying in {delay}s")
-                time.sleep(delay)
-                continue
-            else:
-                # Last attempt failed
-                result = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "detail": f"db_timeout_after_retries: {str(e)[:200]}",
-                    "latency": f"{latency:.2f}s",
-                    "attempts": max_retries,
-                }
-                msg = (
-                    f"{error_code} route=/test-fault/db-timeout "
-                    f"reason=db_timeout_or_pool_exhaustion latency={latency:.2f}"
-                )
-                print(msg, file=sys.stderr)
-                current_app.logger.error(f"db_error={e!s}")
-
-                try:
-                    create_live_incident(
-                        error_code=error_code,
-                        route="/test-fault/db-timeout",
-                        reason="db_timeout_or_pool_exhaustion",
-                        latency=latency,
-                    )
-                except Exception:
-                    current_app.logger.exception("Failed to create incident for %s", error_code)
-                    
-        except Exception as e:
-            # Handle other database errors
-            db.session.rollback()
-            latency = time.time() - start
-            
-            if attempt < max_retries - 1:
-                # Not the last attempt, wait before retrying
-                delay = base_delay * (backoff_factor ** attempt)
-                current_app.logger.warning(f"Database error on attempt {attempt + 1}/{max_retries}, retrying in {delay}s: {str(e)[:100]}")
-                time.sleep(delay)
-                continue
-            else:
-                # Last attempt failed
-                result = {
-                    "status": "error",
-                    "error_code": error_code,
-                    "detail": f"unexpected_db_error_after_retries: {str(e)[:200]}",
-                    "latency": f"{latency:.2f}s",
-                    "attempts": max_retries,
-                }
-                current_app.logger.error(f"Unexpected database error after {max_retries} attempts: {e!s}")
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/db-timeout",
+                reason="db_statement_timeout",
+                latency=latency,
+            )
+        except Exception:
+            current_app.logger.exception("Failed to create incident for %s", error_code)
 
     return _render_fault(result), (500 if result["status"] == "error" else 200)

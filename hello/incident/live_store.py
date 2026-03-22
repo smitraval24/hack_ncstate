@@ -81,8 +81,8 @@ def _deserialize(raw: str) -> dict:
 # ---------------------------------------------------------------------------
 _TYPE_MAP = {
     "FAULT_SQL_INJECTION_TEST": ("SQL Injection Error", "high"),
-    "FAULT_EXTERNAL_API_LATENCY": ("External API Timeout", "critical"),
-    "FAULT_DB_TIMEOUT": ("Database Connection Pool Exhaustion", "critical"),
+    "FAULT_EXTERNAL_API_LATENCY": ("External API Degradation", "critical"),
+    "FAULT_DB_TIMEOUT": ("Database Statement Timeout", "critical"),
 }
 
 
