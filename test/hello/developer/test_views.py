@@ -201,7 +201,6 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert b"What broke" in response.data
         assert b"Logs and evidence" in response.data
         assert b"How it was fixed" in response.data
-        assert b"Learning" in response.data
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incident_detail_shows_fallbacks_when_optional_fields_missing(self, mock_fetch_incidents):
@@ -231,7 +230,6 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert response.status_code == 200
         assert b"Root-cause analysis is still pending for this incident." in response.data
         assert b"Not available for this incident." in response.data
-        assert b"Resolve this incident to unlock the existing knowledge-base and cache actions." in response.data
 
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views.create_live_incident")

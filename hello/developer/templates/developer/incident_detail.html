@@ -453,37 +453,6 @@
       margin-top: 18px;
     }
 
-    .learning-actions {
-      position: relative;
-      z-index: 1;
-      display: grid;
-      gap: 14px;
-      margin-top: 18px;
-    }
-
-    .learning-action {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 14px;
-      padding: 18px;
-      border-radius: 24px;
-      border: 1px solid rgba(149, 167, 255, 0.12);
-      background: rgba(10, 15, 29, 0.72);
-    }
-
-    .learning-action__label {
-      color: white;
-      font-size: 1rem;
-      font-weight: 700;
-    }
-
-    .learning-action__copy {
-      margin-top: 6px;
-      color: rgba(220, 229, 255, 0.72);
-      font-size: 0.92rem;
-      line-height: 1.65;
-    }
 
     .cta-button {
       display: inline-flex;
@@ -590,10 +559,6 @@
         grid-template-columns: 1fr;
       }
 
-      .learning-action {
-        flex-direction: column;
-        align-items: start;
-      }
     }
   </style>
 {% endblock %}
@@ -622,7 +587,7 @@
           <div class="hero-type">{{ incident.incident_type }}</div>
           <p class="hero-copy">
             A single-incident view of the existing recovery data: impact, evidence, root-cause
-            reasoning, remediation details, verification, and learning actions.
+            reasoning, remediation details, and verification.
           </p>
 
           <div class="hero-badges">
