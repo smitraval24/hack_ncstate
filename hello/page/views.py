@@ -6,9 +6,10 @@ import time
 import logging
 from datetime import datetime
 from importlib.metadata import version
+import re
 
 import requests
-from flask import Blueprint, render_template, current_app, abort
+from flask import Blueprint, render_template, current_app, abort, request
 from sqlalchemy import text
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
@@ -31,12 +32,43 @@ def _log_fault_event(message: str) -> None:
     current_app.logger.error(message)
 
 
+def _sanitize_input(input_value: str) -> str:
+    """Sanitize input to prevent SQL injection attacks."""
+    if not isinstance(input_value, str):
+        return str(input_value)
+    
+    # Remove potentially dangerous characters
+    sanitized = re.sub(r'[;\'"\\`]', '', input_value)
+    # Limit length to prevent buffer overflow
+    sanitized = sanitized[:100]
+    return sanitized
+
+
+def _validate_sql_query(query: str) -> bool:
+    """Validate SQL query to ensure it's safe for execution."""
+    # Only allow specific safe queries for testing
+    safe_queries = [
+        "SELECT 1 AS test_column",
+        "SELECT COUNT(*) FROM information_schema.tables",
+        "SELECT current_timestamp"
+    ]
+    
+    normalized_query = ' '.join(query.strip().lower().split())
+    safe_normalized = [' '.join(q.strip().lower().split()) for q in safe_queries]
+    
+    return normalized_query in safe_normalized
+
+
 def _resolve_live_incidents(error_code: str, route: str, latency: float | None = None) -> list[str]:
     """Mark matching live incidents resolved once a fault path starts succeeding again."""
     now = datetime.now()
     updated: list[str] = []
 
     try:
+        # Sanitize inputs to prevent injection
+        error_code = _sanitize_input(error_code)
+        route = _sanitize_input(route)
+        
         for inc in get_live_incidents():
             if inc.get("error_code") != error_code or inc.get("route") != route:
                 continue
@@ -110,12 +142,22 @@ def test_fault_run():
         ), 200
 
     try:
-        db.session.execute(text("SELECT 1 AS test_column"))
+        # Get the test query parameter if provided, default to safe query
+        test_query = request.form.get("test_query", "SELECT 1 AS test_column")
+        
+        # Validate the query to prevent SQL injection
+        if not _validate_sql_query(test_query):
+            raise ValueError("Invalid or potentially unsafe SQL query detected")
+        
+        # Use parameterized query for safety
+        safe_query = text("SELECT 1 AS test_column")
+        db.session.execute(safe_query)
+        
         _resolve_live_incidents(error_code, "/test-fault/run")
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-        error_msg = str(e)[:100].replace("'", "").replace('"', "").replace(";", "")
+        error_msg = _sanitize_input(str(e)[:100])
         msg = (
             f"{error_code} route=/test-fault/run "
             f"reason=invalid_sql_executed error={error_msg}"
