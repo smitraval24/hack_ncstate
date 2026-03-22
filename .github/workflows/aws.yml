@@ -111,14 +111,14 @@ jobs:
         EXPECTED_SHA: ${{ github.sha }}
       run: |
         BUILD_URL="${DASHBOARD_URL%/}/up/build"
-        for attempt in $(seq 1 40); do
+        for attempt in $(seq 1 80); do
           LIVE_SHA=$(curl -fsS "$BUILD_URL" 2>/dev/null | jq -r '.build_sha // empty' 2>/dev/null || true)
           if [ "$LIVE_SHA" = "$EXPECTED_SHA" ]; then
             echo "Live app is serving build $LIVE_SHA (attempt $attempt)"
             exit 0
           fi
-          echo "Waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/40, saw '${LIVE_SHA:-none}')"
-          sleep 5
+          echo "Waiting for build $EXPECTED_SHA at $BUILD_URL (attempt $attempt/80, saw '${LIVE_SHA:-none}')"
+          sleep 10
         done
         echo "Timed out waiting for build $EXPECTED_SHA"
         exit 1
