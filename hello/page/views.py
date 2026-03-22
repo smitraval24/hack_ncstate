@@ -4,7 +4,7 @@ import os
 import sys
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from importlib.metadata import version
 from urllib.parse import urlparse, urljoin
 
@@ -25,6 +25,15 @@ from hello.incident.live_store import (
 page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
+
+# Circuit breaker for external API calls
+_external_api_circuit_breaker = {
+    "failure_count": 0,
+    "last_failure_time": None,
+    "state": "CLOSED",  # CLOSED, OPEN, HALF_OPEN
+    "failure_threshold": 3,
+    "recovery_timeout": 30,  # seconds
+}
 
 
 # This function handles the log fault event work for this file.
@@ -183,56 +192,171 @@ def _safe_database_operation(operation_func, timeout_seconds=2):
                 current_app.logger.warning("Failed to close database connection")
 
 
-def _make_external_api_call_with_resilience(url: str, timeout: float = 5.0, max_retries: int = 2):
+def _check_circuit_breaker():
+    """Check if circuit breaker allows requests."""
+    global _external_api_circuit_breaker
+    
+    now = datetime.now()
+    cb = _external_api_circuit_breaker
+    
+    if cb["state"] == "OPEN":
+        # Check if recovery timeout has passed
+        if cb["last_failure_time"] and (now - cb["last_failure_time"]).seconds >= cb["recovery_timeout"]:
+            cb["state"] = "HALF_OPEN"
+            current_app.logger.info("Circuit breaker moving to HALF_OPEN state")
+            return True
+        return False
+    
+    return True  # CLOSED or HALF_OPEN
+
+
+def _record_circuit_breaker_success():
+    """Record successful API call for circuit breaker."""
+    global _external_api_circuit_breaker
+    
+    cb = _external_api_circuit_breaker
+    if cb["state"] == "HALF_OPEN":
+        cb["state"] = "CLOSED"
+        cb["failure_count"] = 0
+        cb["last_failure_time"] = None
+        current_app.logger.info("Circuit breaker reset to CLOSED state")
+
+
+def _record_circuit_breaker_failure():
+    """Record failed API call for circuit breaker."""
+    global _external_api_circuit_breaker
+    
+    cb = _external_api_circuit_breaker
+    cb["failure_count"] += 1
+    cb["last_failure_time"] = datetime.now()
+    
+    if cb["failure_count"] >= cb["failure_threshold"]:
+        cb["state"] = "OPEN"
+        current_app.logger.warning(f"Circuit breaker OPENED after {cb['failure_count']} failures")
+
+
+def _make_external_api_call_with_resilience(url: str, timeout: float = 5.0, max_retries: int = 3):
     """
-    Make external API call with proper timeout and retry logic.
+    Make external API call with enhanced resilience including circuit breaker pattern.
     Returns (success, response_data, error_type, latency)
     """
     start_time = time.time()
+    
+    # Check circuit breaker first
+    if not _check_circuit_breaker():
+        latency = time.time() - start_time
+        current_app.logger.warning("Circuit breaker is OPEN, rejecting external API request")
+        return False, None, "circuit_breaker_open", latency
+    
     last_exception = None
     
     for attempt in range(max_retries + 1):
         try:
-            # Use reasonable timeout that allows for connection establishment
-            response = requests.get(url, timeout=timeout)
+            # Enhanced connection configuration for better reliability
+            session = requests.Session()
+            
+            # Configure adapters with connection pooling and retry settings
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=1,
+                pool_maxsize=1,
+                max_retries=0,  # We handle retries manually for better control
+                pool_block=False
+            )
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            # Enhanced timeout configuration: (connect_timeout, read_timeout)
+            # Connect timeout should be shorter than read timeout
+            connect_timeout = min(timeout * 0.3, 2.0)  # Max 2s for connection
+            read_timeout = timeout - connect_timeout
+            timeout_tuple = (connect_timeout, read_timeout)
+            
+            current_app.logger.info(f"External API call attempt {attempt + 1}/{max_retries + 1}, timeout={timeout_tuple}")
+            
+            response = session.get(
+                url, 
+                timeout=timeout_tuple,
+                headers={
+                    'User-Agent': 'HelloApp/1.0',
+                    'Accept': 'application/json',
+                    'Connection': 'close'  # Don't reuse connections for reliability
+                }
+            )
+            
             latency = time.time() - start_time
             response.raise_for_status()
             
+            # Record success for circuit breaker
+            _record_circuit_breaker_success()
+            
+            current_app.logger.info(f"External API call successful on attempt {attempt + 1}, latency={latency:.2f}s")
             return True, response.json(), None, latency
             
         except requests.exceptions.Timeout as e:
             last_exception = e
             latency = time.time() - start_time
-            current_app.logger.warning(f"External API timeout on attempt {attempt + 1}/{max_retries + 1}")
+            current_app.logger.warning(f"External API timeout on attempt {attempt + 1}/{max_retries + 1}, latency={latency:.2f}s")
+            
             if attempt < max_retries:
-                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                # Exponential backoff with jitter
+                backoff_time = (0.5 * (2 ** attempt)) + (time.time() % 1) * 0.1
+                current_app.logger.info(f"Retrying after {backoff_time:.2f}s backoff")
+                time.sleep(backoff_time)
                 continue
+                
+            _record_circuit_breaker_failure()
             return False, None, "external_timeout", latency
             
         except requests.exceptions.ConnectionError as e:
             last_exception = e
             latency = time.time() - start_time
-            current_app.logger.warning(f"External API connection error on attempt {attempt + 1}/{max_retries + 1}")
+            current_app.logger.warning(f"External API connection error on attempt {attempt + 1}/{max_retries + 1}: {str(e)[:100]}")
+            
             if attempt < max_retries:
-                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                # Longer backoff for connection errors
+                backoff_time = (1.0 * (2 ** attempt)) + (time.time() % 1) * 0.2
+                current_app.logger.info(f"Retrying after {backoff_time:.2f}s backoff")
+                time.sleep(backoff_time)
                 continue
+                
+            _record_circuit_breaker_failure()
             return False, None, "connection_error", latency
             
         except requests.exceptions.HTTPError as e:
             last_exception = e
             latency = time.time() - start_time
-            current_app.logger.warning(f"External API HTTP error on attempt {attempt + 1}/{max_retries + 1}")
-            # Don't retry on HTTP errors (4xx, 5xx) - they're unlikely to resolve quickly
+            current_app.logger.warning(f"External API HTTP error on attempt {attempt + 1}: {e.response.status_code if e.response else 'Unknown'}")
+            
+            # For 5xx errors, retry; for 4xx errors, don't retry
+            if e.response and e.response.status_code >= 500 and attempt < max_retries:
+                backoff_time = (0.5 * (2 ** attempt)) + (time.time() % 1) * 0.1
+                current_app.logger.info(f"Retrying 5xx error after {backoff_time:.2f}s backoff")
+                time.sleep(backoff_time)
+                continue
+            
+            # Record failure only for 5xx errors or final 4xx attempt
+            if not e.response or e.response.status_code >= 500:
+                _record_circuit_breaker_failure()
+            
             return False, None, "upstream_failure", latency
             
         except Exception as e:
             last_exception = e
             latency = time.time() - start_time
             current_app.logger.exception(f"Unexpected error in external API call: {e}")
+            _record_circuit_breaker_failure()
             return False, None, "unexpected_error", latency
+        
+        finally:
+            # Ensure session is closed
+            try:
+                session.close()
+            except:
+                pass
     
     # Should not reach here, but just in case
     latency = time.time() - start_time
+    _record_circuit_breaker_failure()
     return False, None, "max_retries_exceeded", latency
 
 
@@ -330,16 +454,18 @@ def test_fault_external_api():
         return "", 404
 
     try:
-        # RESILIENCE FIX: Use improved external API call with proper timeout and retry logic
-        # This replaces the unrealistic 0.01s timeout with a reasonable 3.0s timeout
-        # and adds retry logic to handle transient connection issues
+        # RESILIENCE FIX: Enhanced external API call with circuit breaker pattern
+        # - Increased timeout to 5 seconds for better connection establishment
+        # - Increased max retries to 3 with intelligent backoff
+        # - Added circuit breaker pattern to prevent cascading failures
+        # - Enhanced connection configuration and error handling
         success, api_data, error_type, latency = _make_external_api_call_with_resilience(
             url="http://mock_api:5001/data",
-            timeout=3.0,  # Reasonable timeout for connection establishment
-            max_retries=2  # Allow 2 retries for transient issues
+            timeout=5.0,  # Increased timeout for better reliability
+            max_retries=3  # More retries with intelligent backoff
         )
 
-        current_app.logger.info(f"external_call_latency={latency:.2f}")
+        current_app.logger.info(f"external_call_latency={latency:.2f}s circuit_breaker_state={_external_api_circuit_breaker['state']}")
 
         if success:
             result = {
@@ -347,6 +473,7 @@ def test_fault_external_api():
                 "error_code": None,
                 "data": api_data,
                 "latency": f"{latency:.2f}s",
+                "circuit_breaker_state": _external_api_circuit_breaker["state"]
             }
             _resolve_live_incidents(error_code, "/test-fault/external-api", latency)
         else:
@@ -355,6 +482,7 @@ def test_fault_external_api():
                 "error_code": error_code,
                 "detail": error_type,
                 "latency": f"{latency:.2f}s",
+                "circuit_breaker_state": _external_api_circuit_breaker["state"]
             }
 
             msg = (
@@ -381,6 +509,7 @@ def test_fault_external_api():
             "error_code": error_code,
             "detail": "unexpected_error",
             "latency": f"{latency:.2f}s",
+            "circuit_breaker_state": _external_api_circuit_breaker["state"]
         }
 
         sanitized_error = _sanitize_error_message(e)
