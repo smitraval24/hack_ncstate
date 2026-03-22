@@ -41,6 +41,13 @@ BACKBOARD_BASE_URL = os.getenv(
 BACKBOARD_LLM_PROVIDER = os.getenv("BACKBOARD_LLM_PROVIDER", "openai")
 BACKBOARD_MODEL_NAME = os.getenv("BACKBOARD_MODEL_NAME", "gpt-4o")
 
+# GitHub configuration (for reset to push faulty code back).
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+GITHUB_LAMBDA_NAME = os.getenv("GITHUB_LAMBDA_NAME", "")
+
 # AWS CloudWatch Logging.
 CLOUDWATCH_ENABLED = bool(strtobool(os.getenv("CLOUDWATCH_ENABLED", "false")))
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")

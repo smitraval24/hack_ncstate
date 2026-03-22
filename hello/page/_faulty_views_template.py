@@ -1,3 +1,11 @@
+"""Stores the original faulty views.py content for the reset functionality.
+
+When the self-healing loop fixes views.py and deploys it, the "Reset All"
+button uses this template to restore the original faulty code and redeploy,
+enabling the demo cycle to repeat.
+"""
+
+FAULTY_VIEWS_CONTENT = '''\
 """This file handles the views logic for the page part of the project."""
 
 import os
@@ -198,7 +206,7 @@ def test_fault_db_timeout():
     try:
         # INTENTIONAL BUG: pg_sleep(5) with a 2-second statement timeout
         # The timeout is shorter than the sleep, so this always fails
-        db.session.execute(text("SET LOCAL statement_timeout = '2s';"))
+        db.session.execute(text("SET LOCAL statement_timeout = \\'2s\\';"))
         db.session.execute(text("SELECT pg_sleep(5);"))
         latency = time.time() - start
         result = {
@@ -233,3 +241,4 @@ def test_fault_db_timeout():
             current_app.logger.exception("Failed to create incident for %s", error_code)
 
     return _render_fault(result), (500 if result["status"] == "error" else 200)
+'''

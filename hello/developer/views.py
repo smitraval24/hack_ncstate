@@ -1,5 +1,6 @@
 """This file handles the views logic for the developer part of the project."""
 
+import base64
 import json
 import logging
 import os
@@ -284,10 +285,17 @@ def _sync_status(incidents: list[dict]) -> list[dict]:
             inc["status"] = "in_progress"
 
         elif inc.get("status") in ("detected", "in_progress"):
+            # Only auto-resolve if some remediation action has been taken.
+            # Without this guard, newly detected incidents get auto-resolved
+            # immediately because the /health endpoint always returns 200
+            # (the app is healthy even while faulty routes exist).
+            action_type = remediation.get("action_type")
+            if not action_type or action_type == "pending_analysis":
+                continue  # no fix attempted yet, leave as detected
+
             # If a fix was pushed (auto_fix_pushed), give the CI/CD pipeline
-            # time to deploy before auto-resolving. Otherwise resolve
-            # immediately if the app is healthy.
-            if remediation.get("action_type") == "auto_fix_pushed":
+            # time to deploy before auto-resolving.
+            if action_type == "auto_fix_pushed":
                 exec_ts = remediation.get("execution_timestamp")
                 wait = timedelta(minutes=int(os.getenv("AUTO_RESOLVE_MINUTES", "8")))
                 if not exec_ts or (now - exec_ts) < wait:
@@ -647,7 +655,7 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear all live incidents and SSM cooldowns."""
+    """Clear all live incidents, SSM cooldowns, and restore faulty code."""
     try:
         count = reset_live_incidents()
 
@@ -664,10 +672,108 @@ def reset_incidents():
         except Exception as e:
             logger.warning("Could not clear SSM cooldowns: %s", e)
 
-        return jsonify({"success": True, "deleted": count})
+        # Push the original faulty views.py back to GitHub so faults are
+        # restored after the next CI/CD deploy.
+        code_reset_result = _reset_faulty_code()
+
+        return jsonify({
+            "success": True,
+            "deleted": count,
+            "code_reset": code_reset_result,
+        })
     except Exception as e:
         logger.exception("Failed to reset incidents")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _reset_faulty_code() -> dict:
+    """Push the original faulty views.py back to GitHub.
+
+    Tries the GithubTool Lambda first (if GITHUB_LAMBDA_NAME is set),
+    then falls back to the GitHub API directly (if GITHUB_TOKEN is set).
+    """
+    from hello.page._faulty_views_template import FAULTY_VIEWS_CONTENT
+    from config.settings import (
+        GITHUB_TOKEN, GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH,
+        GITHUB_LAMBDA_NAME,
+    )
+
+    file_path = "hello/page/views.py"
+    commit_message = "[RESET] Restore faulty views.py for demo cycle"
+
+    # Method 1: Invoke GithubTool Lambda
+    if GITHUB_LAMBDA_NAME:
+        try:
+            import boto3
+            lambda_client = boto3.client("lambda")
+            payload = {
+                "actionGroup": "GitHubActions",
+                "function": "push_github_fix",
+                "parameters": [
+                    {"name": "file_path", "value": file_path},
+                    {"name": "file_content", "value": FAULTY_VIEWS_CONTENT},
+                    {"name": "commit_message", "value": commit_message},
+                ],
+            }
+            resp = lambda_client.invoke(
+                FunctionName=GITHUB_LAMBDA_NAME,
+                Payload=json.dumps(payload).encode("utf-8"),
+            )
+            result = json.loads(resp["Payload"].read())
+            body = json.loads(
+                result.get("response", {})
+                .get("functionResponse", {})
+                .get("responseBody", {})
+                .get("TEXT", {})
+                .get("body", "{}")
+            )
+            logger.info("Reset faulty code via Lambda: %s", body)
+            return {"method": "lambda", "success": body.get("ok", False), "detail": body}
+        except Exception as e:
+            logger.warning("Lambda reset failed, trying GitHub API: %s", e)
+
+    # Method 2: GitHub API directly
+    if GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO:
+        try:
+            api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
+            headers = {
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github+json",
+                "Content-Type": "application/json",
+            }
+
+            # Get current file SHA
+            get_resp = http_requests.get(
+                f"{api_url}?ref={GITHUB_BRANCH}",
+                headers=headers,
+                timeout=10,
+            )
+            get_resp.raise_for_status()
+            file_sha = get_resp.json()["sha"]
+
+            # Push faulty content
+            content_b64 = base64.b64encode(FAULTY_VIEWS_CONTENT.encode("utf-8")).decode("utf-8")
+            put_resp = http_requests.put(
+                api_url,
+                headers=headers,
+                json={
+                    "message": commit_message,
+                    "content": content_b64,
+                    "sha": file_sha,
+                    "branch": GITHUB_BRANCH,
+                },
+                timeout=15,
+            )
+            put_resp.raise_for_status()
+            commit_sha = put_resp.json().get("commit", {}).get("sha", "")
+            logger.info("Reset faulty code via GitHub API: %s", commit_sha)
+            return {"method": "github_api", "success": True, "commit_sha": commit_sha}
+        except Exception as e:
+            logger.warning("GitHub API reset failed: %s", e)
+            return {"method": "github_api", "success": False, "error": str(e)}
+
+    logger.info("No GitHub credentials configured — skipped code reset")
+    return {"method": "none", "success": False, "error": "No GITHUB_LAMBDA_NAME or GITHUB_TOKEN configured"}
 
 
 # ---------------------------------------------------------------------------
