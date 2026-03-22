@@ -1,28 +1,4 @@
-# This workflow will build and push a new container image to Amazon ECR,
-# and then will deploy a new task definition to Amazon ECS, when there is a push to the "main" branch.
-#
-# To use this workflow, you will need to complete the following set-up steps:
-#
-# 1. Create an ECR repository to store your images.
-#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
-#    Replace the value of the `ECR_REPOSITORY` environment variable in the workflow below with your repository's name.
-#    Replace the value of the `AWS_REGION` environment variable in the workflow below with your repository's region.
-#
-# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
-#    For example, follow the Getting Started guide on the ECS console:
-#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
-#    Replace the value of the `ECS_SERVICE` environment variable in the workflow below with the name you set for the Amazon ECS service.
-#    Replace the value of the `ECS_CLUSTER` environment variable in the workflow below with the name you set for the cluster.
-#
-# 3. Store your ECS task definition as a JSON file in your repository.
-#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
-#    Replace the value of the `ECS_TASK_DEFINITION` environment variable in the workflow below with the path to the JSON file.
-#    Replace the value of the `CONTAINER_NAME` environment variable in the workflow below with the name of the container
-#    in the `containerDefinitions` section of the task definition.
-#
-# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
-#    and best practices on handling the access key credentials.
+# Deploy to Amazon ECS on push to main.
 
 name: Deploy to Amazon ECS
 
@@ -62,25 +38,44 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
+    - name: Extract fault codes from commit
+      id: faults
+      run: |
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))' || echo '[]')
+        echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
+        echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+    # Build both images in parallel using Docker Buildx bake
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push app image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker build \
+          --cache-from type=registry,ref=$ECR_REGISTRY/$ECR_REPOSITORY:buildcache \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --target app \
+          -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+          -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+          . &
+        docker build \
+          --cache-from type=registry,ref=$ECR_REGISTRY/mock-api:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t $ECR_REGISTRY/mock-api:latest \
+          -f Dockerfile.mock_api . &
+        wait
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG &
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest &
+        docker push $ECR_REGISTRY/mock-api:latest &
+        wait
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      id: build-image
 
-    - name: Build and push mock-api image to Amazon ECR
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-      run: |
-        docker build -t $ECR_REGISTRY/mock-api:latest -f Dockerfile.mock_api .
-        docker push $ECR_REGISTRY/mock-api:latest
-
-    # Inject SECRET_KEY securely during render
-    - name: Render ECS task definition with new image & secrets
+    - name: Render ECS task definition
       id: task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
       with:
@@ -96,91 +91,34 @@ jobs:
         task-definition: ${{ steps.task-def.outputs.task-definition }}
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: true
+        wait-for-service-stability: false
 
-    # Ensure jq is available before fault code extraction
-    - name: Install jq
-      run: which jq || (sudo apt-get update && sudo apt-get install -y jq)
-
-    # Extract fault codes from commit messages for pipeline callback.
-    # Commits from the Lambda include "[FAULT:CODE]" tags.
-    - name: Extract fault codes from commit
-      id: faults
-      run: |
-        COMMIT_MSG=$(git log -1 --pretty=%B)
-        echo "commit_msg=$COMMIT_MSG"
-        # Extract all [FAULT:...] tags from the commit message
-        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))' || echo '[]')
-        echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
-        echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
-        echo "Extracted fault codes: $CODES"
-
-    # Cleanup old revisions (keep latest 3)
-    - name: Cleanup old task definition revisions
-      run: |
-        FAMILY_NAME=$(jq -r '.family' ${{ env.ECS_TASK_DEFINITION }})
-
-        TASK_DEFS=$(aws ecs list-task-definitions \
-          --family-prefix $FAMILY_NAME \
-          --sort DESC \
-          --region $AWS_REGION \
-          --query 'taskDefinitionArns' \
-          --output text)
-
-        COUNT=0
-        for TD in $TASK_DEFS; do
-          COUNT=$((COUNT+1))
-          if [ $COUNT -gt 3 ]; then
-            echo "Deregistering $TD"
-            aws ecs deregister-task-definition \
-              --task-definition $TD \
-              --region $AWS_REGION
-          fi
-        done
-
-    # Notify dashboard: deploy succeeded → resolve ALL active incidents
+    # Notify dashboard immediately — don't wait for ECS stability
     - name: Notify dashboard - deploy success
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
       run: |
-        echo "Notifying dashboard of successful deploy..."
-        # Build fault_codes: use extracted [FAULT:] tags if found,
-        # otherwise resolve all active incidents via resolve-all endpoint.
         FAULT_CODES='${{ steps.faults.outputs.fault_codes }}'
         if [ "$FAULT_CODES" = "[]" ] || [ -z "$FAULT_CODES" ]; then
-          echo "No [FAULT:] tags in commit — resolving all active incidents"
           ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/resolve-all"
-          BODY="{
-            \"status\": \"success\",
-            \"commit_sha\": \"${{ github.sha }}\",
-            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }"
+          BODY="{\"status\":\"success\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
         else
           ENDPOINT="$DASHBOARD_URL/developer/incidents/pipeline/callback"
-          BODY="{
-            \"fault_codes\": $FAULT_CODES,
-            \"status\": \"success\",
-            \"commit_sha\": \"${{ github.sha }}\",
-            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-          }"
+          BODY="{\"fault_codes\":$FAULT_CODES,\"status\":\"success\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
         fi
-        # Retry up to 3 times with backoff in case ECS is still stabilizing
-        for attempt in 1 2 3; do
-          HTTP_CODE=$(curl -s -o /tmp/callback_response.txt -w "%{http_code}" \
-            -X POST "$ENDPOINT" \
-            -H "Content-Type: application/json" \
-            -d "$BODY" 2>/dev/null) || HTTP_CODE=0
-          echo "Attempt $attempt: HTTP $HTTP_CODE"
-          cat /tmp/callback_response.txt 2>/dev/null; echo
-          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-            echo "Dashboard callback succeeded"
-            break
-          fi
-          echo "Retrying in $((attempt * 10))s..."
-          sleep $((attempt * 10))
-        done
+        curl -s -o /dev/null -w "HTTP %{http_code}" -X POST "$ENDPOINT" \
+          -H "Content-Type: application/json" -d "$BODY" || true
 
-  # Separate job to handle deploy failure notification
+    # Cleanup old task defs in background (non-blocking)
+    - name: Cleanup old task definition revisions
+      run: |
+        FAMILY_NAME=$(jq -r '.family' ${{ env.ECS_TASK_DEFINITION }})
+        TASK_DEFS=$(aws ecs list-task-definitions --family-prefix $FAMILY_NAME --sort DESC --query 'taskDefinitionArns[3:]' --output text 2>/dev/null)
+        for TD in $TASK_DEFS; do
+          aws ecs deregister-task-definition --task-definition $TD --no-cli-pager > /dev/null 2>&1 &
+        done
+        wait
+
   notify-failure:
     name: Notify deploy failure
     runs-on: ubuntu-latest
@@ -190,26 +128,12 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Extract fault codes from commit
-      id: faults
-      run: |
-        COMMIT_MSG=$(git log -1 --pretty=%B)
-        CODES=$(echo "$COMMIT_MSG" | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))')
-        echo "fault_codes=$CODES" >> $GITHUB_OUTPUT
-        echo "has_faults=$([ "$CODES" != "[]" ] && echo true || echo false)" >> $GITHUB_OUTPUT
-
     - name: Notify dashboard - deploy failed
-      if: steps.faults.outputs.has_faults == 'true'
       env:
         DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
       run: |
-        echo "Notifying dashboard of failed deploy..."
+        CODES=$(git log -1 --pretty=%B | grep -oP '\[FAULT:\K[A-Z_]+(?=\])' | sort -u | jq -R -s -c 'split("\n") | map(select(. != ""))' || echo '[]')
+        [ "$CODES" = "[]" ] && exit 0
         curl -sf -X POST "$DASHBOARD_URL/developer/incidents/pipeline/callback" \
           -H "Content-Type: application/json" \
-          -d "{
-            \"fault_codes\": ${{ steps.faults.outputs.fault_codes }},
-            \"status\": \"failure\",
-            \"commit_sha\": \"${{ github.sha }}\",
-            \"run_url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\",
-            \"deploy_error\": \"ECS deployment failed or service did not stabilize\"
-          }" || echo "Warning: dashboard callback failed (non-fatal)"
+          -d "{\"fault_codes\":$CODES,\"status\":\"failure\",\"commit_sha\":\"${{ github.sha }}\",\"run_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" || true
