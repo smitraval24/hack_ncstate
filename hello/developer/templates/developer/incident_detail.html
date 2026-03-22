@@ -646,9 +646,9 @@
 
         <div class="hero-side">
           <div class="hero-side__card">
-            <div class="hero-side__label">Error Rate</div>
-            <div class="hero-side__value">{{ symptoms.error_rate or '—' }}</div>
-            <div class="hero-side__meta">Current reported error rate for this incident.</div>
+            <div class="hero-side__label">P95 Latency</div>
+            <div class="hero-side__value">{{ symptoms.latency_p95 or '—' }}</div>
+            <div class="hero-side__meta">Measured latency at time of fault detection.</div>
           </div>
           <div class="hero-side__card">
             <div class="hero-side__label">Affected Requests</div>
@@ -672,10 +672,6 @@
         </p>
 
         <div class="stat-grid">
-          <div class="stat-card">
-            <div class="stat-card__label">Error Rate</div>
-            <div class="stat-card__value">{{ symptoms.error_rate or 'Not available' }}</div>
-          </div>
           <div class="stat-card">
             <div class="stat-card__label">P95 Latency</div>
             <div class="stat-card__value">{{ symptoms.latency_p95 or 'Not available' }}</div>
@@ -755,10 +751,6 @@
         {% endif %}
 
         <div class="stat-grid">
-          <div class="stat-card">
-            <div class="stat-card__label">Total Requests</div>
-            <div class="stat-card__value">{{ metric_snapshot.total_requests if metric_snapshot.total_requests is not none else '—' }}</div>
-          </div>
           <div class="stat-card">
             <div class="stat-card__label">Failed Requests</div>
             <div class="stat-card__value">{{ metric_snapshot.failed_requests if metric_snapshot.failed_requests is not none else '—' }}</div>
@@ -852,16 +844,6 @@
 
         <div class="stat-grid">
           <div class="stat-card">
-            <div class="stat-card__label">Error Rate</div>
-            <div class="stat-card__value">
-              {% if verification.error_rate_before is not none %}
-                {{ verification.error_rate_before }}% → {{ verification.error_rate_after if verification.error_rate_after is not none else '—' }}%
-              {% else %}
-                Not available
-              {% endif %}
-            </div>
-          </div>
-          <div class="stat-card">
             <div class="stat-card__label">Latency</div>
             <div class="stat-card__value">
               {% if verification.latency_before is not none %}
@@ -877,12 +859,12 @@
           </div>
         </div>
 
-        {% if verification.error_rate_before is not none %}
+        {% if verification.latency_before is not none %}
           <div class="chart-wrap">
-            <canvas id="errorRateChart"></canvas>
+            <canvas id="latencyCompareChart"></canvas>
           </div>
         {% else %}
-          <div class="placeholder-card">Error-rate comparison will appear once verification metrics are available.</div>
+          <div class="placeholder-card">Latency comparison will appear once verification metrics are available.</div>
         {% endif %}
       </article>
 
@@ -941,45 +923,8 @@
     Chart.defaults.font.family = '"IBM Plex Sans", "Segoe UI", sans-serif';
     Chart.defaults.plugins.legend.labels.usePointStyle = true;
 
-    {% if verification.error_rate_before is not none %}
-    new Chart(document.getElementById('errorRateChart').getContext('2d'), {
-      type: 'bar',
-      data: {
-        labels: ['Before remediation', 'After remediation'],
-        datasets: [{
-          label: 'Error Rate (%)',
-          data: [
-            {{ verification.error_rate_before }},
-            {{ verification.error_rate_after if verification.error_rate_after is not none else 0 }}
-          ],
-          backgroundColor: ['rgba(255, 106, 136, 0.78)', 'rgba(17, 210, 189, 0.78)'],
-          borderColor: ['#ff6a88', '#11d2bd'],
-          borderWidth: 2,
-          borderRadius: 14,
-          borderSkipped: false,
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: { duration: 900, easing: 'easeOutQuart' },
-        plugins: { legend: { display: false } },
-        scales: {
-          y: {
-            beginAtZero: true,
-            max: 100,
-            grid: { color: 'rgba(149, 167, 255, 0.12)' },
-          },
-          x: {
-            grid: { display: false },
-          }
-        }
-      }
-    });
-    {% endif %}
-
     {% if verification.latency_before is not none %}
-    new Chart(document.getElementById('latencyChart').getContext('2d'), {
+    new Chart(document.getElementById('latencyCompareChart').getContext('2d'), {
       type: 'bar',
       data: {
         labels: ['Before remediation', 'After remediation'],

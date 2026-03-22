@@ -51,8 +51,6 @@ def _resolve_live_incidents(error_code: str, route: str, latency: float | None =
                     "status": "resolved",
                     "timestamp_resolved": now,
                     "verification": {
-                        "error_rate_before": inc.get("symptoms", {}).get("error_rate_value", 100),
-                        "error_rate_after": 0,
                         "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
                         "latency_after": latency or 0,
                         "health_check_status": "passed",
@@ -72,18 +70,18 @@ def _validate_and_sanitize_url(base_url: str) -> str:
     """Validate and sanitize base URL to prevent URL injection attacks."""
     if not base_url:
         raise ValueError("Base URL cannot be empty")
-    
+
     # Parse the URL to validate its components
     parsed = urlparse(base_url)
-    
+
     # Only allow http and https protocols
     if parsed.scheme not in ('http', 'https'):
         raise ValueError("Only HTTP and HTTPS protocols are allowed")
-    
+
     # Ensure hostname is present and valid
     if not parsed.netloc:
         raise ValueError("Invalid hostname in URL")
-    
+
     # Prevent localhost/private IP access in production (security measure)
     hostname = parsed.hostname
     if hostname:
@@ -92,33 +90,33 @@ def _validate_and_sanitize_url(base_url: str) -> str:
         blocked_hostnames = ['127.0.0.1', 'localhost', '0.0.0.0', '::1']
         if hostname_lower in blocked_hostnames and not DEBUG:
             raise ValueError("Access to localhost/loopback addresses not allowed in production")
-    
+
     # Reconstruct clean URL (removes any malicious components)
     clean_url = f"{parsed.scheme}://{parsed.netloc}"
     if parsed.path:
         clean_url += parsed.path.rstrip('/')
-    
+
     return clean_url
 
 
 def _sanitize_error_message(error: Exception) -> str:
     """Sanitize error message to prevent information disclosure and injection attacks."""
     error_msg = str(error)
-    
+
     # Truncate to prevent excessive logging
     error_msg = error_msg[:100]
-    
+
     # Remove potentially dangerous characters that could be used for injection
     dangerous_chars = ["'", '"', ";", "--", "/*", "*/", "<", ">", "&", "|"]
     for char in dangerous_chars:
         error_msg = error_msg.replace(char, "")
-    
+
     # Remove SQL keywords to prevent information disclosure
     sql_keywords = ["SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "UNION"]
     for keyword in sql_keywords:
         error_msg = error_msg.replace(keyword.upper(), "[SQL_KEYWORD]")
         error_msg = error_msg.replace(keyword.lower(), "[sql_keyword]")
-    
+
     return error_msg.strip()
 
 
@@ -130,52 +128,52 @@ def _safe_database_operation(operation_func, timeout_seconds=2):
     start_time = time.time()
     connection = None
     transaction = None
-    
+
     try:
         # Get a fresh connection from the pool
         connection = db.engine.connect()
-        
+
         # Start a transaction with timeout
         transaction = connection.begin()
-        
+
         # Set connection-level timeout
         connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}ms'"))
-        
+
         # Execute the operation
         result = operation_func(connection)
-        
+
         # Commit transaction
         transaction.commit()
-        
+
         latency = time.time() - start_time
         return True, result, None, latency
-        
+
     except (OperationalError, TimeoutError) as e:
         latency = time.time() - start_time
         error_msg = str(e).lower()
-        
+
         if transaction:
             try:
                 transaction.rollback()
             except Exception:
                 pass
-        
+
         if "timeout" in error_msg or "canceling statement" in error_msg:
             return False, None, "db_timeout_or_pool_exhaustion", latency
         else:
             return False, None, "db_connection_error", latency
-            
+
     except Exception as e:
         latency = time.time() - start_time
-        
+
         if transaction:
             try:
                 transaction.rollback()
             except Exception:
                 pass
-        
+
         return False, None, f"db_unexpected_error: {_sanitize_error_message(e)}", latency
-        
+
     finally:
         # Ensure connection is properly returned to pool
         if connection:
@@ -197,7 +195,6 @@ def home():
     )
 
 
-# This function runs the fault work used in this file.
 @page.get("/test-fault")
 def test_fault():
     return render_template(
@@ -209,38 +206,27 @@ def test_fault():
     )
 
 
-# This function runs the fault run work used in this file.
 @page.post("/test-fault/run")
 def test_fault_run():
     error_code = "FAULT_SQL_INJECTION_TEST"
     result = {"status": "ok", "error_code": None}
 
-    # Check if fault injection is enabled before proceeding
     if not ENABLE_FAULT_INJECTION:
-        result = {"status": "disabled", "error_code": None}
-        current_app.logger.info("SQL injection test skipped - fault injection disabled")
-        return render_template(
-            "page/test_fault.html",
-            flask_ver=version("flask"),
-            python_ver=PYTHON_VER,
-            debug=DEBUG,
-            enable_fault_injection=ENABLE_FAULT_INJECTION,
-            result=result,
-        ), 200
+        return "", 404
 
     try:
         # SECURITY FIX: Use parameterized query to prevent SQL injection
         # This query safely tests database connectivity without vulnerability
         query = text("SELECT :test_value as test_value, :test_message as test_message")
         query_result = db.session.execute(
-            query, 
+            query,
             {"test_value": 1, "test_message": "SQL injection test completed safely"}
         )
         test_row = query_result.fetchone()
         db.session.commit()
-        
+
         result = {
-            "status": "ok", 
+            "status": "ok",
             "error_code": None,
             "message": "SQL injection test completed successfully - no vulnerabilities detected",
             "test_result": {
@@ -249,14 +235,14 @@ def test_fault_run():
             }
         }
         _resolve_live_incidents(error_code, "/test-fault/run")
-        
+
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
-        
+
         # SECURITY FIX: Enhanced error message sanitization
         sanitized_error = _sanitize_error_message(e)
-        
+
         msg = (
             f"{error_code} route=/test-fault/run "
             f"reason=sql_test_execution_error error=({type(e).__name__}) {sanitized_error}"
@@ -267,7 +253,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="sql_test_execution_error",
+                reason="invalid_sql_executed",
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
@@ -279,168 +265,108 @@ def test_fault_run():
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
-    ), (500 if result["status"] == "error" and result.get("error_code") == error_code else 200)
+    ), (500 if result["status"] == "error" else 200)
 
 
-# This function runs the fault external api work used in this file.
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
-    overall_start = time.time()
+    if not ENABLE_FAULT_INJECTION:
+        return "", 404
+
+    start = time.time()
 
     try:
-        # Get and validate base URL with security checks
-        mock_api_base = os.environ.get("MOCK_API_BASE_URL", "http://mock_api:5001")
-        
-        # Validate and sanitize the base URL to prevent URL injection
-        try:
-            clean_base_url = _validate_and_sanitize_url(mock_api_base)
-        except ValueError as ve:
-            total_latency = time.time() - overall_start
-            result = {
-                "status": "error",
-                "error_code": "CONFIGURATION_ERROR",
-                "detail": f"Invalid base URL: {str(ve)}",
-                "latency": f"{total_latency:.2f}s",
-            }
-            msg = (
-                f"{error_code} route=/test-fault/external-api "
-                f"reason=invalid_base_url latency={total_latency:.2f}"
-            )
-            _log_fault_event(msg)
-            try:
-                create_live_incident(
-                    error_code=error_code,
-                    route="/test-fault/external-api",
-                    reason="invalid_base_url",
-                    latency=total_latency
-                )
-            except Exception as incident_error:
-                current_app.logger.exception(f"Failed to create live incident: {incident_error}")
-            
-            return render_template(
-                "page/test_fault.html",
-                flask_ver=version("flask"),
-                python_ver=PYTHON_VER,
-                debug=DEBUG,
-                enable_fault_injection=True,
-                result=result,
-            ), 400
-        
-        # Safely construct the URL using urljoin
-        url = urljoin(clean_base_url.rstrip('/') + '/', 'data')
-        
-        # Validate timeout parameter
-        timeout_seconds = float(os.environ.get("EXTERNAL_API_BASE_TIMEOUT", "0.01"))
-        timeout_seconds = min(max(timeout_seconds, 0.01), 5.0)  # Increased max timeout to 5 seconds
+        # INTENTIONAL FAULT: extremely low timeout to simulate external API latency.
+        # The mock API cannot respond in 0.01s, so this MUST timeout.
+        # DO NOT increase the timeout or add retry logic.
+        r = requests.get("http://mock_api:5001/data", timeout=0.01)
+        latency = time.time() - start
 
-        response = requests.get(url, timeout=timeout_seconds)
-        total_latency = time.time() - overall_start
-        response.raise_for_status()
+        current_app.logger.info(f"external_call_latency={latency:.2f}")
 
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"raw_response": response.text[:500]}
-
+        r.raise_for_status()
         result = {
             "status": "ok",
             "error_code": None,
-            "data": data,
-            "latency": f"{total_latency:.2f}s",
-            "status_code": response.status_code,
+            "data": r.json(),
+            "latency": f"{latency:.2f}s",
         }
-        _resolve_live_incidents(error_code, "/test-fault/external-api", total_latency)
-    except requests.exceptions.Timeout as e:
-        total_latency = time.time() - overall_start
+        _resolve_live_incidents(error_code, "/test-fault/external-api", latency)
+
+    except requests.exceptions.Timeout:
+        latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": "Request timeout - external service is too slow",
-            "latency": f"{total_latency:.2f}s",
+            "detail": "timeout",
+            "latency": f"{latency:.2f}s",
         }
+
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason=external_timeout latency={total_latency:.2f}"
+            f"reason=external_timeout latency={latency:.2f}"
         )
         _log_fault_event(msg)
+
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/external-api",
                 reason="external_timeout",
-                latency=total_latency,
+                latency=latency,
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
-    except requests.exceptions.ConnectionError as e:
-        total_latency = time.time() - overall_start
+
+    except requests.exceptions.ConnectionError:
+        latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": "Connection failed - external service is unreachable",
-            "latency": f"{total_latency:.2f}s",
+            "detail": "connection_refused",
+            "latency": f"{latency:.2f}s",
         }
+
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason=connection_error latency={total_latency:.2f}"
+            f"reason=connection_error latency={latency:.2f}"
         )
         _log_fault_event(msg)
+
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/external-api",
                 reason="connection_error",
-                latency=total_latency,
-            )
-        except Exception as incident_error:
-            current_app.logger.exception(f"Failed to create live incident: {incident_error}")
-    except requests.exceptions.HTTPError as e:
-        total_latency = time.time() - overall_start
-        reason = "upstream_failure" if e.response is not None and e.response.status_code >= 500 else "client_error"
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": f"HTTP error: {e.response.status_code if e.response else 'Unknown'}" if e.response else "HTTP error occurred",
-            "latency": f"{total_latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason={reason} latency={total_latency:.2f}"
-        )
-        _log_fault_event(msg)
-        try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason=reason,
-                latency=total_latency,
+                latency=latency,
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
 
-    except Exception as e:
-        # Handle unexpected errors in the endpoint itself
-        total_latency = time.time() - overall_start
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": "Internal error occurred",  # Don't expose internal error details
-            "latency": f"{total_latency:.2f}s",
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
         }
+
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason=endpoint_exception latency={total_latency:.2f}"
+            f"reason=upstream_failure latency={latency:.2f}"
         )
         _log_fault_event(msg)
+
         try:
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/external-api",
-                reason="endpoint_exception",
-                latency=total_latency
+                reason="upstream_failure",
+                latency=latency,
             )
         except Exception as incident_error:
             current_app.logger.exception(f"Failed to create live incident: {incident_error}")
@@ -452,27 +378,16 @@ def test_fault_external_api():
         debug=DEBUG,
         enable_fault_injection=True,
         result=result,
-    ), (504 if result["status"] == "error" and result.get("error_code") == error_code else 200)
+    ), (504 if result["status"] == "error" else 200)
 
 
-# This function runs the fault db timeout work used in this file.
 @page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
     error_code = "FAULT_DB_TIMEOUT"
     result = {"status": "ok", "error_code": None}
 
-    # Check if fault injection is enabled before proceeding
     if not ENABLE_FAULT_INJECTION:
-        result = {"status": "disabled", "error_code": None}
-        current_app.logger.info("DB timeout test skipped - fault injection disabled")
-        return render_template(
-            "page/test_fault.html",
-            flask_ver=version("flask"),
-            python_ver=PYTHON_VER,
-            debug=DEBUG,
-            enable_fault_injection=ENABLE_FAULT_INJECTION,
-            result=result,
-        ), 200
+        return "", 404
 
     def db_timeout_operation(connection):
         """Database operation that will timeout - used for testing timeout handling."""
@@ -482,7 +397,7 @@ def test_fault_db_timeout():
 
     # Use the safe database operation wrapper with proper timeout handling
     success, operation_result, error_reason, latency = _safe_database_operation(
-        db_timeout_operation, 
+        db_timeout_operation,
         timeout_seconds=1  # Set timeout to 1 second while trying to sleep for 5 seconds
     )
 
@@ -491,7 +406,6 @@ def test_fault_db_timeout():
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "message": "Database operation completed successfully"
         }
         _resolve_live_incidents(error_code, "/test-fault/db-timeout", latency)
     else:

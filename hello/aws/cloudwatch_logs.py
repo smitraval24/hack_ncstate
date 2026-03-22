@@ -359,8 +359,6 @@ def build_fault_router_incidents(
             "route": "-",
             "error_code": fault_code,
             "symptoms": {
-                "error_rate": "—",
-                "error_rate_value": 1,
                 "latency_p95": "—",
                 "latency_p95_value": 0.0,
                 "endpoint": "-",
@@ -370,7 +368,6 @@ def build_fault_router_incidents(
             "breadcrumbs": {
                 "recent_logs": [],
                 "metric_snapshot": {
-                    "total_requests": None,
                     "failed_requests": 1,
                     "avg_latency": None,
                     "timestamp": opened_at.isoformat(),
@@ -388,8 +385,6 @@ def build_fault_router_incidents(
                 "execution_timestamp": None,
             },
             "verification": {
-                "error_rate_before": None,
-                "error_rate_after": None,
                 "latency_before": None,
                 "latency_after": None,
                 "health_check_status": None,
@@ -483,8 +478,6 @@ def build_fault_router_incidents(
                 "execution_timestamp": ev.timestamp.replace(tzinfo=None),
             }
             inc["verification"] = {
-                "error_rate_before": None,
-                "error_rate_after": None,
                 "latency_before": None,
                 "latency_after": None,
                 "health_check_status": "unknown",
@@ -696,9 +689,6 @@ def build_incidents_from_events(
         incident_type = _guess_type(error_code)
         incident_id = f"CW-{_stable_id(error_code, route, str(newest.timestamp_ms))}"
 
-        error_rate_value = min(100, max(1, count * 5))
-        error_rate = f"{error_rate_value}%"
-
         incidents.append(
             {
                 "id": incident_id,
@@ -710,8 +700,6 @@ def build_incidents_from_events(
                 "route": route,
                 "error_code": error_code,
                 "symptoms": {
-                    "error_rate": error_rate,
-                    "error_rate_value": error_rate_value,
                     "latency_p95": (
                         f"{latency:.2f}s" if latency is not None else "—"
                     ),
@@ -728,7 +716,6 @@ def build_incidents_from_events(
                         for e in evs[:logs_per_incident]
                     ],
                     "metric_snapshot": {
-                        "total_requests": None,
                         "failed_requests": count,
                         "avg_latency": (
                             f"{latency:.2f}s" if latency is not None else None
@@ -751,8 +738,6 @@ def build_incidents_from_events(
                     "execution_timestamp": None,
                 },
                 "verification": {
-                    "error_rate_before": None,
-                    "error_rate_after": None,
                     "latency_before": None,
                     "latency_after": None,
                     "health_check_status": None,

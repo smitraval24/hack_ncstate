@@ -4,12 +4,16 @@ When a fault is injected, an incident is created here in the developer-
 dashboard-compatible format (nested dicts).  The developer dashboard reads
 from this store instead of mock data, giving real-time visibility into
 injected faults.
+
+Falls back to an in-memory store when Redis is unavailable so incidents
+are never silently lost.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -23,14 +27,34 @@ INCIDENT_LIST_KEY = "live_incidents:list"
 INCIDENT_KEY_PREFIX = "live_incidents:detail:"
 INCIDENT_COUNTER_KEY = "live_incidents:counter"
 
+# ---------------------------------------------------------------------------
+# In-memory fallback (used when Redis is unreachable)
+# ---------------------------------------------------------------------------
+_mem_lock = threading.Lock()
+_mem_incidents: dict[str, dict] = {}  # id -> incident dict
+_mem_order: list[str] = []            # newest first
+_mem_counter: int = 0
 
-# This function handles the redis work for this file.
+
 def _redis() -> redis.Redis:
     url = current_app.config.get("REDIS_URL", "redis://redis:6379/0")
-    return redis.from_url(url)
+    return redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
 
 
-# This function handles the serialize incident work for this file.
+def _redis_available() -> redis.Redis | None:
+    """Return a Redis client if reachable, else None."""
+    try:
+        r = _redis()
+        r.ping()
+        return r
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+
 def _serialize_incident(inc: dict) -> str:
     """JSON-encode an incident, converting datetimes to ISO strings."""
     def _convert(obj: Any) -> Any:
@@ -49,7 +73,6 @@ def _serialize_incident(inc: dict) -> str:
     return json.dumps(safe)
 
 
-# This function handles the deserialize incident work for this file.
 def _deserialize_incident(raw: str) -> dict:
     """JSON-decode an incident, converting ISO strings back to datetimes."""
     inc = json.loads(raw)
@@ -59,7 +82,6 @@ def _deserialize_incident(raw: str) -> dict:
                 inc[key] = datetime.fromisoformat(inc[key])
             except (ValueError, TypeError):
                 pass
-    # Convert nested execution_timestamp
     rem = inc.get("remediation") or {}
     if rem.get("execution_timestamp"):
         try:
@@ -69,32 +91,28 @@ def _deserialize_incident(raw: str) -> dict:
     return inc
 
 
-# This function creates the incident work used in this file.
-def create_incident(
+# ---------------------------------------------------------------------------
+# Incident type / severity mapping
+# ---------------------------------------------------------------------------
+_TYPE_MAP = {
+    "FAULT_SQL_INJECTION_TEST": ("SQL Injection Error", "high"),
+    "FAULT_EXTERNAL_API_LATENCY": ("External API Timeout", "critical"),
+    "FAULT_DB_TIMEOUT": ("Database Connection Pool Exhaustion", "critical"),
+}
+
+
+def _build_incident(
+    incident_id: str,
     error_code: str,
     route: str,
     reason: str,
     latency: float | None = None,
 ) -> dict:
-    """Create a new live incident and store it in Redis.
-
-    Returns the incident dict in developer-dashboard format.
-    """
-    r = _redis()
-    seq = r.incr(INCIDENT_COUNTER_KEY)
+    """Build an incident dict in dashboard-compatible format."""
     now = datetime.now()
+    incident_type, severity = _TYPE_MAP.get(error_code, ("Application Error", "medium"))
 
-    # Map error codes to incident types and severity
-    type_map = {
-        "FAULT_SQL_INJECTION_TEST": ("SQL Injection Error", "high"),
-        "FAULT_EXTERNAL_API_LATENCY": ("External API Timeout", "critical"),
-        "FAULT_DB_TIMEOUT": ("Database Connection Pool Exhaustion", "critical"),
-    }
-    incident_type, severity = type_map.get(error_code, ("Application Error", "medium"))
-
-    incident_id = f"LIVE-{seq:04d}"
-
-    incident = {
+    return {
         "id": incident_id,
         "timestamp_opened": now,
         "timestamp_resolved": None,
@@ -104,8 +122,6 @@ def create_incident(
         "route": route,
         "error_code": error_code,
         "symptoms": {
-            "error_rate": "—",
-            "error_rate_value": 0,
             "latency_p95": f"{latency:.2f}s" if latency else "—",
             "latency_p95_value": latency or 0,
             "endpoint": route,
@@ -118,7 +134,6 @@ def create_incident(
                 + (f" latency={latency:.2f}" if latency else "")
             ],
             "metric_snapshot": {
-                "total_requests": None,
                 "failed_requests": 1,
                 "avg_latency": f"{latency:.2f}s" if latency else None,
                 "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -138,8 +153,6 @@ def create_incident(
             "execution_timestamp": None,
         },
         "verification": {
-            "error_rate_before": None,
-            "error_rate_after": None,
             "latency_before": None,
             "latency_after": None,
             "health_check_status": None,
@@ -147,69 +160,147 @@ def create_incident(
         },
     }
 
-    # Store in Redis
-    r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
-    r.lpush(INCIDENT_LIST_KEY, incident_id)
 
-    logger.info("Created live incident %s for %s", incident_id, error_code)
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def create_incident(
+    error_code: str,
+    route: str,
+    reason: str,
+    latency: float | None = None,
+) -> dict:
+    """Create a new live incident. Uses Redis when available, memory otherwise."""
+    r = _redis_available()
+
+    if r is not None:
+        try:
+            seq = r.incr(INCIDENT_COUNTER_KEY)
+            incident_id = f"LIVE-{seq:04d}"
+            incident = _build_incident(incident_id, error_code, route, reason, latency)
+            r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
+            r.lpush(INCIDENT_LIST_KEY, incident_id)
+            logger.info("Created live incident %s for %s (redis)", incident_id, error_code)
+            return incident
+        except Exception:
+            logger.warning("Redis write failed, falling back to memory", exc_info=True)
+
+    # In-memory fallback
+    global _mem_counter
+    with _mem_lock:
+        _mem_counter += 1
+        incident_id = f"LIVE-{_mem_counter:04d}"
+        incident = _build_incident(incident_id, error_code, route, reason, latency)
+        _mem_incidents[incident_id] = incident
+        _mem_order.insert(0, incident_id)
+    logger.info("Created live incident %s for %s (memory)", incident_id, error_code)
     return incident
 
 
-# This function updates the incident work used in this file.
 def update_incident(incident_id: str, updates: dict) -> dict | None:
-    """Update fields on a live incident in Redis."""
-    r = _redis()
-    raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
-    if not raw:
-        return None
+    """Update fields on a live incident."""
+    r = _redis_available()
 
-    incident = _deserialize_incident(raw)
-    for key, value in updates.items():
-        if isinstance(value, dict) and isinstance(incident.get(key), dict):
-            incident[key].update(value)
-        else:
-            incident[key] = value
+    if r is not None:
+        try:
+            raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
+            if raw:
+                incident = _deserialize_incident(raw)
+                for key, value in updates.items():
+                    if isinstance(value, dict) and isinstance(incident.get(key), dict):
+                        incident[key].update(value)
+                    else:
+                        incident[key] = value
+                r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
+                return incident
+        except Exception:
+            logger.warning("Redis update failed for %s, trying memory", incident_id, exc_info=True)
 
-    r.set(f"{INCIDENT_KEY_PREFIX}{incident_id}", _serialize_incident(incident))
+    # In-memory fallback
+    with _mem_lock:
+        incident = _mem_incidents.get(incident_id)
+        if not incident:
+            return None
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(incident.get(key), dict):
+                incident[key].update(value)
+            else:
+                incident[key] = value
+        _mem_incidents[incident_id] = incident
     return incident
 
 
-# This function gets the incident work used in this file.
 def get_incident(incident_id: str) -> dict | None:
     """Get a single live incident by ID."""
-    r = _redis()
-    raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
-    if not raw:
-        return None
-    return _deserialize_incident(raw)
+    r = _redis_available()
+
+    if r is not None:
+        try:
+            raw = r.get(f"{INCIDENT_KEY_PREFIX}{incident_id}")
+            if raw:
+                return _deserialize_incident(raw)
+        except Exception:
+            logger.warning("Redis read failed for %s, trying memory", incident_id, exc_info=True)
+
+    with _mem_lock:
+        return _mem_incidents.get(incident_id)
 
 
-# This function gets the all incidents work used in this file.
 def get_all_incidents() -> list[dict]:
     """Return all live incidents, most recent first."""
-    r = _redis()
-    ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
-    incidents = []
-    for inc_id in ids:
-        if isinstance(inc_id, bytes):
-            inc_id = inc_id.decode()
-        raw = r.get(f"{INCIDENT_KEY_PREFIX}{inc_id}")
-        if raw:
-            incidents.append(_deserialize_incident(raw))
+    incidents: list[dict] = []
+    r = _redis_available()
+
+    if r is not None:
+        try:
+            ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
+            for inc_id in ids:
+                if isinstance(inc_id, bytes):
+                    inc_id = inc_id.decode()
+                raw = r.get(f"{INCIDENT_KEY_PREFIX}{inc_id}")
+                if raw:
+                    incidents.append(_deserialize_incident(raw))
+        except Exception:
+            logger.warning("Redis read-all failed, falling back to memory", exc_info=True)
+            incidents = []
+
+    # Always merge in-memory incidents (they may exist alongside Redis ones)
+    with _mem_lock:
+        redis_ids = {i["id"] for i in incidents}
+        for inc_id in _mem_order:
+            if inc_id not in redis_ids:
+                inc = _mem_incidents.get(inc_id)
+                if inc:
+                    incidents.append(inc)
+
     return incidents
 
 
-# This function handles the reset all work for this file.
 def reset_all() -> int:
-    """Delete all live incidents from Redis. Returns count deleted."""
-    r = _redis()
-    ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
+    """Delete all live incidents. Returns count deleted."""
     count = 0
-    for inc_id in ids:
-        if isinstance(inc_id, bytes):
-            inc_id = inc_id.decode()
-        r.delete(f"{INCIDENT_KEY_PREFIX}{inc_id}")
-        count += 1
-    r.delete(INCIDENT_LIST_KEY)
-    r.delete(INCIDENT_COUNTER_KEY)
+    r = _redis_available()
+
+    if r is not None:
+        try:
+            ids = r.lrange(INCIDENT_LIST_KEY, 0, -1)
+            for inc_id in ids:
+                if isinstance(inc_id, bytes):
+                    inc_id = inc_id.decode()
+                r.delete(f"{INCIDENT_KEY_PREFIX}{inc_id}")
+                count += 1
+            r.delete(INCIDENT_LIST_KEY)
+            r.delete(INCIDENT_COUNTER_KEY)
+        except Exception:
+            logger.warning("Redis reset failed", exc_info=True)
+
+    # Also clear in-memory store
+    global _mem_counter
+    with _mem_lock:
+        count += len(_mem_incidents)
+        _mem_incidents.clear()
+        _mem_order.clear()
+        _mem_counter = 0
+
     return count
