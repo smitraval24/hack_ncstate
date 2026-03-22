@@ -3,320 +3,22 @@
 import os
 import sys
 import time
-import logging
-from datetime import datetime, timedelta
 from importlib.metadata import version
-from urllib.parse import urlparse, urljoin
 
 import requests
-from flask import Blueprint, render_template, current_app, abort
+from flask import Blueprint, render_template, current_app
 from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, TimeoutError
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
 from hello.incident.live_store import (
     create_incident as create_live_incident,
-    get_all_incidents as get_live_incidents,
-    update_incident as update_live_incident,
 )
 
 # This blueprint groups related routes for this part of the app.
 page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
-
-# Circuit breaker state for external API calls
-_circuit_breaker = {
-    "failure_count": 0,
-    "last_failure_time": None,
-    "state": "CLOSED",  # CLOSED, OPEN, HALF_OPEN
-    "failure_threshold": 5,
-    "recovery_timeout": 60  # seconds
-}
-
-
-# This function handles the log fault event work for this file.
-def _log_fault_event(message: str) -> None:
-    """Emit a single structured fault log line for CloudWatch subscribers."""
-    current_app.logger.error(message)
-
-
-def _resolve_live_incidents(error_code: str, route: str, latency: float | None = None) -> list[str]:
-    """Mark matching live incidents resolved once a fault path starts succeeding again."""
-    now = datetime.now()
-    updated: list[str] = []
-
-    try:
-        for inc in get_live_incidents():
-            if inc.get("error_code") != error_code or inc.get("route") != route:
-                continue
-            if inc.get("status") == "resolved":
-                continue
-
-            result = update_live_incident(
-                inc["id"],
-                {
-                    "status": "resolved",
-                    "timestamp_resolved": now,
-                    "verification": {
-                        "latency_before": inc.get("symptoms", {}).get("latency_p95_value", 0),
-                        "latency_after": latency or 0,
-                        "health_check_status": "passed",
-                        "success": True,
-                    },
-                },
-            )
-            if result:
-                updated.append(inc["id"])
-    except Exception:
-        current_app.logger.exception("Failed to resolve live incidents for %s", error_code)
-
-    return updated
-
-
-def _validate_and_sanitize_url(base_url: str) -> str:
-    """Validate and sanitize base URL to prevent URL injection attacks."""
-    if not base_url:
-        raise ValueError("Base URL cannot be empty")
-
-    # Parse the URL to validate its components
-    parsed = urlparse(base_url)
-
-    # Only allow http and https protocols
-    if parsed.scheme not in ('http', 'https'):
-        raise ValueError("Only HTTP and HTTPS protocols are allowed")
-
-    # Ensure hostname is present and valid
-    if not parsed.netloc:
-        raise ValueError("Invalid hostname in URL")
-
-    # Prevent localhost/private IP access in production (security measure)
-    hostname = parsed.hostname
-    if hostname:
-        hostname_lower = hostname.lower()
-        # Block obviously dangerous hostnames
-        blocked_hostnames = ['127.0.0.1', 'localhost', '0.0.0.0', '::1']
-        if hostname_lower in blocked_hostnames and not DEBUG:
-            raise ValueError("Access to localhost/loopback addresses not allowed in production")
-
-    # Reconstruct clean URL (removes any malicious components)
-    clean_url = f"{parsed.scheme}://{parsed.netloc}"
-    if parsed.path:
-        clean_url += parsed.path.rstrip('/')
-
-    return clean_url
-
-
-def _sanitize_error_message(error: Exception) -> str:
-    """Sanitize error message to prevent information disclosure and injection attacks."""
-    error_msg = str(error)
-
-    # Truncate to prevent excessive logging
-    error_msg = error_msg[:100]
-
-    # Remove potentially dangerous characters that could be used for injection
-    dangerous_chars = ["'", '"', ";", "--", "/*", "*/", "<", ">", "&", "|"]
-    for char in dangerous_chars:
-        error_msg = error_msg.replace(char, "")
-
-    # Remove SQL keywords to prevent information disclosure
-    sql_keywords = ["SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "UNION"]
-    for keyword in sql_keywords:
-        error_msg = error_msg.replace(keyword.upper(), "[SQL_KEYWORD]")
-        error_msg = error_msg.replace(keyword.lower(), "[sql_keyword]")
-
-    return error_msg.strip()
-
-
-def _safe_database_operation(operation_func, timeout_seconds=2):
-    """
-    Execute a database operation with proper timeout and connection handling.
-    Returns (success, result, error_message, latency)
-    """
-    start_time = time.time()
-    connection = None
-    transaction = None
-
-    try:
-        # Get a fresh connection from the pool
-        connection = db.engine.connect()
-
-        # Start a transaction with timeout
-        transaction = connection.begin()
-
-        # Set connection-level timeout
-        connection.execute(text(f"SET LOCAL statement_timeout = '{timeout_seconds * 1000}ms'"))
-
-        # Execute the operation
-        result = operation_func(connection)
-
-        # Commit transaction
-        transaction.commit()
-
-        latency = time.time() - start_time
-        return True, result, None, latency
-
-    except (OperationalError, TimeoutError) as e:
-        latency = time.time() - start_time
-        error_msg = str(e).lower()
-
-        if transaction:
-            try:
-                transaction.rollback()
-            except Exception:
-                pass
-
-        if "timeout" in error_msg or "canceling statement" in error_msg:
-            return False, None, "db_timeout_or_pool_exhaustion", latency
-        else:
-            return False, None, "db_connection_error", latency
-
-    except Exception as e:
-        latency = time.time() - start_time
-
-        if transaction:
-            try:
-                transaction.rollback()
-            except Exception:
-                pass
-
-        return False, None, f"db_unexpected_error: {_sanitize_error_message(e)}", latency
-
-    finally:
-        # Ensure connection is properly returned to pool
-        if connection:
-            try:
-                connection.close()
-            except Exception:
-                current_app.logger.warning("Failed to close database connection")
-
-
-def _update_circuit_breaker(success: bool):
-    """Update circuit breaker state based on call result."""
-    global _circuit_breaker
-    
-    if success:
-        _circuit_breaker["failure_count"] = 0
-        _circuit_breaker["state"] = "CLOSED"
-    else:
-        _circuit_breaker["failure_count"] += 1
-        _circuit_breaker["last_failure_time"] = datetime.now()
-        
-        if _circuit_breaker["failure_count"] >= _circuit_breaker["failure_threshold"]:
-            _circuit_breaker["state"] = "OPEN"
-
-
-def _should_allow_call() -> bool:
-    """Check if circuit breaker allows the call."""
-    global _circuit_breaker
-    
-    if _circuit_breaker["state"] == "CLOSED":
-        return True
-    
-    if _circuit_breaker["state"] == "OPEN":
-        # Check if we should try to recover
-        if (_circuit_breaker["last_failure_time"] and 
-            datetime.now() - _circuit_breaker["last_failure_time"] > timedelta(seconds=_circuit_breaker["recovery_timeout"])):
-            _circuit_breaker["state"] = "HALF_OPEN"
-            return True
-        return False
-    
-    # HALF_OPEN state - allow one call to test recovery
-    return True
-
-
-def _make_external_api_call_with_resilience(url: str, timeout: float = 1.5, max_retries: int = 0):
-    """
-    Make external API call with circuit breaker pattern and optimized timeouts.
-    Returns (success, response_data, error_type, latency)
-    """
-    start_time = time.time()
-    
-    # Check circuit breaker
-    if not _should_allow_call():
-        latency = time.time() - start_time
-        current_app.logger.warning("Circuit breaker OPEN - blocking external API call")
-        return False, None, "circuit_breaker_open", latency
-    
-    try:
-        # Optimized timeout settings to reduce latency and connection errors
-        # Increased connect timeout to 1.0s (from 0.5s) to reduce connection errors
-        # Reduced read timeout to 1.5s (from 2s) to minimize overall latency
-        # Added session reuse for better connection management
-        session = requests.Session()
-        session.headers.update({
-            'Connection': 'keep-alive',
-            'User-Agent': 'cream-service/1.0',
-            'Accept': 'application/json',
-            'Cache-Control': 'no-cache'
-        })
-        
-        # Set connection pooling options
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=1,
-            pool_maxsize=1,
-            max_retries=0
-        )
-        session.mount('http://', adapter)
-        session.mount('https://', adapter)
-        
-        response = session.get(
-            url, 
-            timeout=(1.0, timeout),  # (connect_timeout=1.0s, read_timeout=1.5s) - optimized
-        )
-        
-        latency = time.time() - start_time
-        response.raise_for_status()
-        
-        # Success - update circuit breaker
-        _update_circuit_breaker(True)
-        
-        return True, response.json(), None, latency
-        
-    except requests.exceptions.Timeout as e:
-        latency = time.time() - start_time
-        current_app.logger.warning(f"External API timeout, latency: {latency:.2f}s")
-        _update_circuit_breaker(False)
-        return False, None, "external_timeout", latency
-        
-    except requests.exceptions.ConnectionError as e:
-        latency = time.time() - start_time
-        error_str = str(e).lower()
-        
-        # Categorize connection errors more specifically
-        if "connection refused" in error_str or "connection aborted" in error_str:
-            error_type = "connection_refused"
-        elif "name resolution failed" in error_str or "nodename nor servname provided" in error_str:
-            error_type = "dns_resolution_failed"
-        elif "connection timeout" in error_str or "timed out" in error_str:
-            error_type = "connection_timeout"
-        else:
-            error_type = "connection_error"
-            
-        current_app.logger.warning(f"External API connection error: {error_type}, latency: {latency:.2f}s")
-        _update_circuit_breaker(False)
-        return False, None, error_type, latency
-        
-    except requests.exceptions.HTTPError as e:
-        latency = time.time() - start_time
-        status_code = e.response.status_code if e.response else None
-        current_app.logger.warning(f"External API HTTP error {status_code}")
-        _update_circuit_breaker(False)
-        return False, None, "upstream_failure", latency
-        
-    except Exception as e:
-        latency = time.time() - start_time
-        current_app.logger.warning(f"Unexpected error in external API call: {str(e)[:100]}")
-        _update_circuit_breaker(False)
-        return False, None, "unexpected_error", latency
-    
-    finally:
-        # Close session to prevent connection leaks
-        try:
-            session.close()
-        except:
-            pass
 
 
 # This function handles the home work for this file.
@@ -390,58 +92,33 @@ def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
 
-    # Optimized external API call with circuit breaker pattern and improved connection handling
-    # Reduced timeout to 1.5s (from 2s) and added circuit breaker to prevent cascading failures
-    # This should significantly reduce connection errors and improve overall system resilience
-    success, response_data, error_type, latency = _make_external_api_call_with_resilience(
-        "http://mock_api:5001/data", 
-        timeout=1.5,   # Reduced from 2s to 1.5s for faster failure detection
-        max_retries=0  # Still no retries to minimize resource consumption
-    )
+    start = time.time()
 
-    current_app.logger.info(f"external_call_latency={latency:.2f}")
-
-    if success:
+    try:
+        # INTENTIONAL: 3s timeout against mock API with 60% chance of 2-8s delay
+        # and 30% chance of HTTP 500 — fails ~70% of the time
+        r = requests.get("http://mock_api:5001/data", timeout=3)
+        latency = time.time() - start
+        current_app.logger.info(f"external_call_latency={latency:.2f}")
+        r.raise_for_status()
         result = {
             "status": "ok",
             "error_code": None,
-            "data": response_data,
+            "data": r.json(),
             "latency": f"{latency:.2f}s",
         }
-        
-        # Try to resolve any existing incidents for this route
-        try:
-            resolved_incidents = _resolve_live_incidents(error_code, "/test-fault/external-api", latency)
-            if resolved_incidents:
-                current_app.logger.info(f"Pipeline callback (success): updated {resolved_incidents} for ['{error_code}']")
-        except Exception:
-            current_app.logger.exception("Failed to resolve incidents after successful API call")
-    else:
+
+    except requests.exceptions.Timeout:
+        latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": error_type,
+            "detail": "timeout",
             "latency": f"{latency:.2f}s",
         }
-        
-        # Enhanced error mapping with more specific error types
-        reason_mapping = {
-            "external_timeout": "external_timeout",
-            "connection_error": "connection_error",
-            "connection_refused": "connection_error",
-            "connection_timeout": "connection_error", 
-            "dns_resolution_failed": "connection_error",
-            "upstream_failure": "upstream_failure",
-            "unexpected_error": "unexpected_error",
-            "max_retries_exceeded": "connection_error",
-            "circuit_breaker_open": "circuit_breaker_protection"
-        }
-        
-        reason = reason_mapping.get(error_type, "connection_error")
-        
         msg = (
             f"{error_code} route=/test-fault/external-api "
-            f"reason={reason} latency={latency:.2f}"
+            f"reason=external_timeout latency={latency:.2f}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -450,7 +127,57 @@ def test_fault_external_api():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/external-api",
-                reason=reason,
+                reason="external_timeout",
+                latency=latency,
+            )
+        except Exception:
+            pass
+
+    except requests.exceptions.HTTPError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "upstream_500",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=upstream_failure latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="upstream_failure",
+                latency=latency,
+            )
+        except Exception:
+            pass
+
+    except requests.exceptions.ConnectionError:
+        latency = time.time() - start
+        result = {
+            "status": "error",
+            "error_code": error_code,
+            "detail": "connection_refused",
+            "latency": f"{latency:.2f}s",
+        }
+        msg = (
+            f"{error_code} route=/test-fault/external-api "
+            f"reason=connection_error latency={latency:.2f}"
+        )
+        print(msg, file=sys.stderr)
+        current_app.logger.error(msg)
+
+        try:
+            create_live_incident(
+                error_code=error_code,
+                route="/test-fault/external-api",
+                reason="connection_error",
                 latency=latency,
             )
         except Exception:
