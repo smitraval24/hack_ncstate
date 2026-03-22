@@ -647,9 +647,35 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear all live incidents from the store."""
+    """Clear all live incidents and restore original fault code."""
     try:
         count = reset_live_incidents()
+
+        # Restore the original broken views.py so faults can be re-triggered
+        views_path = os.path.join(
+            os.path.dirname(__file__), "..", "page", "views.py"
+        )
+        original_path = os.path.join(
+            os.path.dirname(__file__), "..", "page", "views_original.py"
+        )
+        if os.path.exists(original_path):
+            import shutil
+            shutil.copy2(original_path, views_path)
+            logger.info("Restored original fault injection code in views.py")
+
+        # Clear Lambda fault cooldowns in SSM so faults are processed again
+        try:
+            import boto3
+            ssm = boto3.client("ssm")
+            for code in ("FAULT_SQL_INJECTION_TEST", "FAULT_EXTERNAL_API_LATENCY", "FAULT_DB_TIMEOUT"):
+                try:
+                    ssm.delete_parameter(Name=f"/cream/fault-cooldown/{code}")
+                except ssm.exceptions.ParameterNotFound:
+                    pass
+            logger.info("Cleared SSM fault cooldowns")
+        except Exception as e:
+            logger.warning("Could not clear SSM cooldowns: %s", e)
+
         return jsonify({"success": True, "deleted": count})
     except Exception as e:
         logger.exception("Failed to reset incidents")

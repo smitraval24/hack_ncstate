@@ -8,8 +8,6 @@ from importlib.metadata import version
 import requests
 from flask import Blueprint, render_template, current_app
 from sqlalchemy import text
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 from hello.extensions import db
@@ -21,64 +19,6 @@ from hello.incident.live_store import (
 page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
-
-
-# Circuit breaker implementation
-class CircuitBreaker:
-    def __init__(self, failure_threshold=3, recovery_timeout=30):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.failure_count = 0
-        self.last_failure_time = None
-        self.state = 'CLOSED'  # CLOSED, OPEN, HALF_OPEN
-    
-    def call(self, func, *args, **kwargs):
-        if self.state == 'OPEN':
-            if time.time() - self.last_failure_time > self.recovery_timeout:
-                self.state = 'HALF_OPEN'
-            else:
-                raise Exception("Circuit breaker is OPEN")
-        
-        try:
-            result = func(*args, **kwargs)
-            self._on_success()
-            return result
-        except Exception as e:
-            self._on_failure()
-            raise e
-    
-    def _on_success(self):
-        self.failure_count = 0
-        self.state = 'CLOSED'
-    
-    def _on_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        if self.failure_count >= self.failure_threshold:
-            self.state = 'OPEN'
-
-# Global circuit breaker instance
-api_circuit_breaker = CircuitBreaker()
-
-def get_requests_session_with_retries():
-    """Create a requests session with retry strategy and timeouts."""
-    session = requests.Session()
-    
-    # Configure retry strategy
-    retry_strategy = Retry(
-        total=3,  # Total number of retries
-        backoff_factor=0.5,  # Exponential backoff factor
-        status_forcelist=[429, 500, 502, 503, 504],  # HTTP status codes to retry
-        connect=3,  # Connection retries
-        read=3,    # Read retries
-    )
-    
-    # Mount adapter with retry strategy
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    
-    return session
 
 
 # This function handles the home work for this file.
@@ -145,19 +85,6 @@ def test_fault_run():
     ), (500 if result["status"] == "error" else 200)
 
 
-def make_external_api_call():
-    """Make external API call with improved error handling."""
-    session = get_requests_session_with_retries()
-    
-    # Increased timeout to account for retries and potential network delays
-    response = session.get(
-        "http://mock_api:5001/data", 
-        timeout=(5, 10)  # (connection_timeout, read_timeout)
-    )
-    response.raise_for_status()
-    return response
-
-
 @page.post("/test-fault/external-api")
 def test_fault_external_api():
     error_code = "FAULT_EXTERNAL_API_LATENCY"
@@ -169,15 +96,16 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # Use circuit breaker pattern to prevent cascading failures
-        response = api_circuit_breaker.call(make_external_api_call)
+        # INTENTIONAL: 3s timeout against mock API with 60% chance of 2-8s delay
+        # and 30% chance of HTTP 500 — fails ~70% of the time
+        r = requests.get("http://mock_api:5001/data", timeout=3)
         latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
-        
+        r.raise_for_status()
         result = {
             "status": "ok",
             "error_code": None,
-            "data": response.json(),
+            "data": r.json(),
             "latency": f"{latency:.2f}s",
         }
 
@@ -206,12 +134,12 @@ def test_fault_external_api():
         except Exception:
             pass
 
-    except requests.exceptions.HTTPError as e:
+    except requests.exceptions.HTTPError:
         latency = time.time() - start
         result = {
             "status": "error",
             "error_code": error_code,
-            "detail": f"upstream_{e.response.status_code if e.response else 'unknown'}",
+            "detail": "upstream_500",
             "latency": f"{latency:.2f}s",
         }
         msg = (
@@ -251,32 +179,6 @@ def test_fault_external_api():
                 error_code=error_code,
                 route="/test-fault/external-api",
                 reason="connection_error",
-                latency=latency,
-            )
-        except Exception:
-            pass
-
-    except Exception as e:
-        # Handle circuit breaker and other exceptions
-        latency = time.time() - start
-        result = {
-            "status": "error",
-            "error_code": error_code,
-            "detail": f"circuit_breaker_or_unexpected: {str(e)[:100]}",
-            "latency": f"{latency:.2f}s",
-        }
-        msg = (
-            f"{error_code} route=/test-fault/external-api "
-            f"reason=circuit_breaker_open latency={latency:.2f}"
-        )
-        print(msg, file=sys.stderr)
-        current_app.logger.error(msg)
-
-        try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/external-api",
-                reason="circuit_breaker_open",
                 latency=latency,
             )
         except Exception:

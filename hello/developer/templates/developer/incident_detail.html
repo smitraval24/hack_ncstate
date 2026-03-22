@@ -880,52 +880,6 @@
         {% endif %}
       </article>
 
-      <article class="glass-panel story-panel" data-reveal style="--reveal-delay: 280ms;">
-        <div class="section-title">Learning</div>
-        <p class="section-copy">
-          Existing knowledge-base and cache actions, kept exactly as they are today but presented more prominently.
-        </p>
-
-        {% if verification.latency_before is not none %}
-          <div class="chart-wrap">
-            <canvas id="latencyChart"></canvas>
-          </div>
-        {% else %}
-          <div class="placeholder-card">Latency comparison will appear once verification metrics are available.</div>
-        {% endif %}
-
-        {% if incident.status == 'resolved' %}
-          <div class="learning-actions">
-            <div class="learning-action">
-              <div>
-                <div class="learning-action__label">RAG Knowledge Base</div>
-                <div class="learning-action__copy">
-                  Store this resolved incident so future retrieval can reference the same recovery story.
-                </div>
-              </div>
-              <div id="rag-status">
-                <button id="store-rag-btn" onclick="storeInRAG()" class="cta-button cta-button--primary">Store in RAG</button>
-              </div>
-            </div>
-
-            <div class="learning-action">
-              <div>
-                <div class="learning-action__label">Redis Cache</div>
-                <div class="learning-action__copy">
-                  Cache this resolved incident for faster lookup using the existing Redis flow.
-                </div>
-              </div>
-              <div id="cache-status">
-                <button id="store-cache-btn" onclick="storeInCache()" class="cta-button cta-button--secondary">Store in Cache</button>
-              </div>
-            </div>
-          </div>
-        {% else %}
-          <div class="placeholder-card">
-            Resolve this incident to unlock the existing knowledge-base and cache actions. The underlying behavior remains unchanged.
-          </div>
-        {% endif %}
-      </article>
     </section>
   </div>
 
@@ -994,52 +948,5 @@
       });
     }
 
-    function storeInRAG() {
-      const btn = document.getElementById('store-rag-btn');
-      const statusEl = document.getElementById('rag-status');
-      btn.disabled = true;
-      btn.textContent = 'Storing...';
-      btn.classList.add('opacity-75');
-
-      fetch('/developer/incidents/{{ incident.id }}/store-rag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) {
-          statusEl.innerHTML = '<span class="status-chip status-chip--success">Stored in RAG</span>';
-        } else {
-          statusEl.innerHTML = '<span class="status-chip status-chip--danger">' + (data.error || 'Failed') + '</span>';
-        }
-      })
-      .catch((err) => {
-        statusEl.innerHTML = '<span class="status-chip status-chip--danger">Error: ' + err.message + '</span>';
-      });
-    }
-
-    function storeInCache() {
-      const btn = document.getElementById('store-cache-btn');
-      const statusEl = document.getElementById('cache-status');
-      btn.disabled = true;
-      btn.textContent = 'Caching...';
-      btn.classList.add('opacity-75');
-
-      fetch('/developer/incidents/{{ incident.id }}/store-cache', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success) {
-          statusEl.innerHTML = '<span class="status-chip status-chip--success">Cached (' + data.ttl + ')</span>';
-        } else {
-          statusEl.innerHTML = '<span class="status-chip status-chip--danger">' + (data.error || 'Failed') + '</span>';
-        }
-      })
-      .catch((err) => {
-        statusEl.innerHTML = '<span class="status-chip status-chip--danger">Error: ' + err.message + '</span>';
-      });
-    }
   </script>
 {% endblock %}
