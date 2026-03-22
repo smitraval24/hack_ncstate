@@ -131,10 +131,42 @@ def invoke_claude(incident, analysis):
         }
     ]
 
+    # Map fault codes to their specific route function names so Claude
+    # knows exactly which function to fix and which to leave alone.
+    fault_function_map = {
+        "FAULT_SQL_INJECTION_TEST": "test_fault_run",
+        "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
+        "FAULT_DB_TIMEOUT": "test_fault_db_timeout",
+    }
+    target_function = fault_function_map.get(incident["fault_code"], "unknown")
+
+    fault_fix_hints = {
+        "FAULT_SQL_INJECTION_TEST": (
+            "The function test_fault_run() executes malformed SQL: `SELECT FROM` "
+            "(missing column/table). Fix the SQL query so it executes successfully, "
+            "e.g. `SELECT 1`. When the query succeeds, the function should return "
+            "status 'ok' (HTTP 200) instead of raising an exception."
+        ),
+        "FAULT_EXTERNAL_API_LATENCY": (
+            "The function test_fault_external_api() calls the mock API with a 3-second "
+            "timeout that is too short (the API delays 2-8 seconds). Fix by increasing "
+            "the timeout to at least 10 seconds and/or adding retry logic with backoff. "
+            "The goal is for the call to succeed instead of timing out."
+        ),
+        "FAULT_DB_TIMEOUT": (
+            "The function test_fault_db_timeout() sets statement_timeout='2s' then runs "
+            "pg_sleep(5), which always times out. Fix by either removing the "
+            "statement_timeout, increasing it to more than 5 seconds, or reducing the "
+            "pg_sleep to less than the timeout. The goal is for the query to complete "
+            "without a timeout error."
+        ),
+    }
+    fix_hint = fault_fix_hints.get(incident["fault_code"], "Fix the identified issue.")
+
     messages = [
         {
             "role": "user",
-            "content": f"""You are a remediation agent. Analyze the incident and push a fix to GitHub.
+            "content": f"""You are a remediation agent. You MUST fix ONLY the specific faulty endpoint described below. Do NOT modify any other function in the file.
 
 INCIDENT:
 {json.dumps(incident, indent=2)}
@@ -142,17 +174,22 @@ INCIDENT:
 BACKBOARD_ANALYSIS:
 {json.dumps(analysis, indent=2)}
 
-The repository has the following key file you must use when pushing fixes:
-- hello/page/views.py  (no leading slash)
+TARGET FILE: hello/page/views.py
+TARGET FUNCTION: {target_function}()
+FIX HINT: {fix_hint}
 
-IMPORTANT: Your commit message MUST start with "[FAULT:{incident['fault_code']}]" so the CI/CD pipeline can track this fix.
-For example: "[FAULT:{incident['fault_code']}] Fix SQL injection vulnerability in views.py"
+CRITICAL RULES:
+1. ONLY modify the function `{target_function}()` and any helper you add for it.
+2. Do NOT touch, modify, or "improve" any other function in the file (home, _render_fault, test_fault, or any other test_fault_* function).
+3. Every line of code outside `{target_function}()` must remain EXACTLY as-is — same imports, same logic, same comments, same bugs. If another function has a bug, LEAVE IT. You are only fixing {incident['fault_code']}.
+4. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
 
-Steps you MUST follow:
-1. First call read_github_file to read the actual content of hello/page/views.py
-2. Analyze the file content and identify the vulnerability
-3. Call push_github_fix with the complete fixed file content (commit message MUST start with [FAULT:...])
-4. Report what you changed"""
+Steps:
+1. Call read_github_file to read hello/page/views.py
+2. Identify the bug in `{target_function}()` only
+3. Fix ONLY that function — copy everything else unchanged
+4. Call push_github_fix with the full file (commit message starts with [FAULT:{incident['fault_code']}])
+5. Report what you changed"""
         }
     ]
 
