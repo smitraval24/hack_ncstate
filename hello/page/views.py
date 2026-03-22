@@ -6,7 +6,7 @@ import time
 from importlib.metadata import version
 
 import requests
-from flask import Blueprint, render_template, current_app
+from flask import Blueprint, render_template, current_app, request
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, TimeoutError
 
@@ -60,17 +60,23 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # FIXED: Use a safe, valid SQL query instead of malformed SQL
+        # SECURITY FIX: Use parameterized query to prevent SQL injection
         # This query safely selects a constant value to test database connectivity
-        db.session.execute(text("SELECT 1 as test_value"))
+        # Using bound parameters prevents any potential SQL injection attacks
+        query = text("SELECT :test_value as test_result")
+        db.session.execute(query, {"test_value": 1})
         db.session.commit()
+        
+        # Log successful database test
+        current_app.logger.info("Database connectivity test passed successfully")
+        
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=database_connection_test_failed"
+            f"reason=database_connection_test_failed error={str(e)[:100]}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -236,13 +242,16 @@ def test_fault_db_timeout():
     start = time.time()
 
     try:
-        # FIXED: Use proper timeout handling with connection pooling
-        # Set a reasonable statement timeout of 30 seconds
-        db.session.execute(text("SET LOCAL statement_timeout = '30s';"))
+        # SECURITY FIX: Use proper parameterized queries and safe timeout handling
+        # Set a reasonable statement timeout of 30 seconds using parameterized query
+        timeout_query = text("SET LOCAL statement_timeout = :timeout_value")
+        db.session.execute(timeout_query, {"timeout_value": "30s"})
         
-        # Test database connectivity with a lightweight query instead of pg_sleep
+        # Test database connectivity with a lightweight parameterized query
         # This prevents guaranteed timeouts and tests actual database health
-        db.session.execute(text("SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active';"))
+        health_query = text("SELECT COUNT(*) as active_count FROM pg_stat_activity WHERE state = :state")
+        result_set = db.session.execute(health_query, {"state": "active"})
+        active_count = result_set.scalar()
         
         # Commit the transaction properly
         db.session.commit()
@@ -252,7 +261,8 @@ def test_fault_db_timeout():
             "status": "ok",
             "error_code": None,
             "latency": f"{latency:.2f}s",
-            "detail": "database_connection_healthy"
+            "detail": "database_connection_healthy",
+            "active_connections": active_count
         }
         
         current_app.logger.info(f"Database health check completed successfully in {latency:.2f}s")
