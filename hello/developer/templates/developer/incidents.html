@@ -217,6 +217,24 @@
       background: rgba(255, 119, 146, 0.2);
     }
 
+    .hero-arm-healing {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(17, 210, 189, 0.28);
+      background: rgba(17, 210, 189, 0.12);
+      color: #a8f0e4;
+      font-weight: 700;
+    }
+
+    .hero-arm-healing:hover {
+      transform: translateY(-2px);
+      background: rgba(17, 210, 189, 0.2);
+    }
+
     .hero-posture {
       position: relative;
       z-index: 1;
@@ -648,6 +666,7 @@
             </span>
             {% if data_source in ('live', 'live+cloudwatch') %}
               <button onclick="resetIncidents()" class="hero-reset">Reset All</button>
+              <button onclick="armHealing()" class="hero-arm-healing">Arm Self-Healing</button>
             {% endif %}
           </div>
         </div>
@@ -1144,7 +1163,7 @@
     setInterval(updateDashboard, REFRESH_INTERVAL);
 
     function resetIncidents() {
-      if (!confirm('Reset all live incidents?')) return;
+      if (!confirm('Reset all incidents and restore faulty code?\nSelf-healing will be paused until you click "Arm Self-Healing".')) return;
       fetch('/developer/incidents/reset', { method: 'POST' })
         .then((res) => res.json())
         .then((data) => {
@@ -1155,6 +1174,20 @@
           }
         })
         .catch((err) => alert('Reset failed: ' + err.message));
+    }
+
+    function armHealing() {
+      if (!confirm('Arm self-healing?\nThe next fault you trigger will be picked up by the Lambda and auto-remediated.')) return;
+      fetch('/developer/incidents/arm-healing', { method: 'POST' })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            alert('Self-healing armed! Trigger a fault now.');
+          } else {
+            alert('Failed: ' + (data.error || 'Unknown error'));
+          }
+        })
+        .catch((err) => alert('Failed: ' + err.message));
     }
   </script>
 {% endblock %}

@@ -655,22 +655,13 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear all live incidents, SSM cooldowns, and restore faulty code."""
+    """Clear all live incidents, pause self-healing, and restore faulty code."""
     try:
         count = reset_live_incidents()
 
-        # Clear Lambda fault cooldowns in SSM so faults are processed again
-        try:
-            import boto3
-            ssm = boto3.client("ssm")
-            for code in ("FAULT_SQL_INJECTION_TEST", "FAULT_EXTERNAL_API_LATENCY", "FAULT_DB_TIMEOUT"):
-                try:
-                    ssm.delete_parameter(Name=f"/cream/fault-cooldown/{code}")
-                except ssm.exceptions.ParameterNotFound:
-                    pass
-            logger.info("Cleared SSM fault cooldowns")
-        except Exception as e:
-            logger.warning("Could not clear SSM cooldowns: %s", e)
+        # Pause self-healing so the Lambda doesn't immediately "fix" the
+        # faulty code before the user can demo the errors.
+        _pause_self_healing()
 
         # Push the original faulty views.py back to GitHub so faults are
         # restored after the next CI/CD deploy.
@@ -680,10 +671,78 @@ def reset_incidents():
             "success": True,
             "deleted": count,
             "code_reset": code_reset_result,
+            "self_healing": "paused (use /developer/incidents/arm-healing to enable)",
         })
     except Exception as e:
         logger.exception("Failed to reset incidents")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@developer.post("/developer/incidents/arm-healing")
+def arm_self_healing():
+    """Clear SSM cooldowns so the self-healing Lambda processes the next fault.
+
+    Call this AFTER you've triggered faults and want the self-healing loop
+    to kick in. The next fault logged to CloudWatch will be picked up by
+    the Lambda.
+    """
+    try:
+        _arm_self_healing()
+        return jsonify({
+            "success": True,
+            "message": "Self-healing armed. Trigger a fault now — the Lambda will process it.",
+        })
+    except Exception as e:
+        logger.exception("Failed to arm self-healing")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+def _pause_self_healing():
+    """Set SSM cooldowns + demo pause so the Lambda skips all faults."""
+    import time as _time
+    try:
+        import boto3
+        ssm = boto3.client("ssm")
+        # Set per-fault cooldowns
+        now = str(_time.time())
+        for code in ("FAULT_SQL_INJECTION_TEST", "FAULT_EXTERNAL_API_LATENCY", "FAULT_DB_TIMEOUT"):
+            ssm.put_parameter(
+                Name=f"/cream/fault-cooldown/{code}",
+                Value=now,
+                Type="String",
+                Overwrite=True,
+            )
+        # Set global demo pause flag
+        ssm.put_parameter(
+            Name="/cream/demo-paused",
+            Value="true",
+            Type="String",
+            Overwrite=True,
+        )
+        logger.info("Self-healing paused (cooldowns set + demo-paused=true)")
+    except Exception as e:
+        logger.warning("Could not pause self-healing: %s", e)
+
+
+def _arm_self_healing():
+    """Clear SSM cooldowns + demo pause so the Lambda processes faults."""
+    try:
+        import boto3
+        ssm = boto3.client("ssm")
+        # Clear per-fault cooldowns
+        for code in ("FAULT_SQL_INJECTION_TEST", "FAULT_EXTERNAL_API_LATENCY", "FAULT_DB_TIMEOUT"):
+            try:
+                ssm.delete_parameter(Name=f"/cream/fault-cooldown/{code}")
+            except ssm.exceptions.ParameterNotFound:
+                pass
+        # Clear demo pause flag
+        try:
+            ssm.delete_parameter(Name="/cream/demo-paused")
+        except ssm.exceptions.ParameterNotFound:
+            pass
+        logger.info("Self-healing armed (cooldowns cleared + demo-paused removed)")
+    except Exception as e:
+        logger.warning("Could not arm self-healing: %s", e)
 
 
 def _reset_faulty_code() -> dict:

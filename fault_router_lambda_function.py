@@ -19,6 +19,9 @@ FAULT_CODES = {
     "FAULT_DB_TIMEOUT"
 }
 
+# Skip processing if the demo is paused (set by the Reset endpoint).
+DEMO_PAUSE_PARAM = "/cream/demo-paused"
+
 ROUTE_RE = re.compile(r"\broute=([^\s]+)")
 REASON_RE = re.compile(r"\breason=([^\s]+)")
 
@@ -254,8 +257,25 @@ def _check_and_set_cooldown(fault_code: str) -> bool:
     return False
 
 
+def _is_demo_paused() -> bool:
+    """Check if demo pause is active (set by /developer/incidents/reset)."""
+    ssm = boto3.client("ssm")
+    try:
+        resp = ssm.get_parameter(Name=DEMO_PAUSE_PARAM)
+        return resp["Parameter"]["Value"] == "true"
+    except ssm.exceptions.ParameterNotFound:
+        return False
+    except Exception as e:
+        print(f"DEMO_PAUSE_CHECK_ERROR: {e}")
+        return False
+
+
 # This function handles the lambda handler work for this file.
 def lambda_handler(event, context):
+    if _is_demo_paused():
+        print("SKIP: demo is paused — faults will not be auto-remediated")
+        return {"statusCode": 200, "body": "demo_paused"}
+
     cw = decode_cw_payload(event)
     log_group = cw.get("logGroup")
     log_stream = cw.get("logStream")
