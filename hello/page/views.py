@@ -181,6 +181,19 @@ def test_fault_external_api():
     error_code = "FAULT_EXTERNAL_API_LATENCY"
     result = {"status": "ok", "error_code": None}
 
+    # Check if fault injection is enabled before proceeding
+    if not ENABLE_FAULT_INJECTION:
+        result = {"status": "disabled", "error_code": None}
+        current_app.logger.info("External API test skipped - fault injection disabled")
+        return render_template(
+            "page/test_fault.html",
+            flask_ver=version("flask"),
+            python_ver=PYTHON_VER,
+            debug=DEBUG,
+            enable_fault_injection=ENABLE_FAULT_INJECTION,
+            result=result,
+        ), 200
+
     overall_start = time.time()
 
     try:
