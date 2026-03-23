@@ -17,6 +17,10 @@ from hello.incident.live_store import (
 from hello.page.views import _render_fault
 
 
+def _is_verification_probe() -> bool:
+    return request.headers.get("X-Fault-Verification") == "1"
+
+
 def test_fault_run():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -25,38 +29,27 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # FIXED: Use parameterized query to prevent SQL injection
-        # This demonstrates the proper way to handle user input in SQL queries
-        user_input = request.args.get('search', 'test')
-        
-        # Safe parameterized query - prevents SQL injection
-        safe_query = text("SELECT :input_param as search_term")
-        db.session.execute(safe_query, {"input_param": user_input})
-        
-        result = {
-            "status": "ok", 
-            "error_code": None,
-            "message": f"SQL injection test passed - safely handled input: {user_input}"
-        }
-
+        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
+        db.session.execute(text("SELECT FROM"))
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=sql_query_failed error={str(e)}"
+            f"reason=invalid_sql_executed"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
 
-        try:
-            create_live_incident(
-                error_code=error_code,
-                route="/test-fault/run",
-                reason="sql_query_failed",
-            )
-        except Exception:
-            current_app.logger.exception("Failed to create incident for %s", error_code)
+        if not _is_verification_probe():
+            try:
+                create_live_incident(
+                    error_code=error_code,
+                    route="/test-fault/run",
+                    reason="invalid_sql_executed",
+                )
+            except Exception:
+                current_app.logger.exception("Failed to create incident for %s", error_code)
 
     return _render_fault(result), (500 if result["status"] == "error" else 200)

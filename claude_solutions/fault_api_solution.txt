@@ -1,6 +1,7 @@
 Fault Code: FAULT_EXTERNAL_API_LATENCY
 Target File: hello/page/views_api.py   ← THIS IS THE ONLY FILE YOU MAY TOUCH
 Target Function: test_fault_external_api
+Implementation Location: inside test_fault_external_api() in hello/page/views_api.py only
 
 FORBIDDEN: Do NOT read or modify hello/page/views.py — it is OFF LIMITS.
 

@@ -1,6 +1,7 @@
 Fault Code: FAULT_SQL_INJECTION_TEST
 Target File: hello/page/views_sql.py   ← THIS IS THE ONLY FILE YOU MAY TOUCH
 Target Function: test_fault_run
+Implementation Location: inside test_fault_run() in hello/page/views_sql.py only
 
 FORBIDDEN: Do NOT read or modify hello/page/views.py — it is OFF LIMITS.
 

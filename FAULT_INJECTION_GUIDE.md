@@ -9,18 +9,19 @@ These faults exist to trigger the self-healing pipeline (CloudWatch -> Lambda ->
 
 The system supports a repeatable demo cycle:
 
-1. **Push faulty code** — The faulty `views.py` is deployed with all three intentional bugs
+1. **Push faulty code** — The split fault files are deployed with their intentional bugs
 2. **Trigger faults** — Use the UI or curl to trigger one or more faults
 3. **Dashboard shows errors** — Incidents appear as "detected" with severity/type info
 4. **Self-healing triggers** — CloudWatch -> Lambda -> Backboard RAG -> Claude -> GitHub push -> CI/CD deploy
 5. **Faults stop triggering** — After deploy, the fixed code no longer produces errors
-6. **Reset All** — Clears incidents, SSM cooldowns, and pushes the original faulty `views.py` back to GitHub
+6. **Reset All** — Clears incidents, SSM cooldowns, pauses self-healing, and pushes the original faulty split files back to GitHub
 7. **CI/CD redeploys faulty code** — The faults are restored, ready for another demo cycle
 
 ### Key architecture point
 
-All three fault routes live in `hello/page/views.py` — the same file the self-healing Lambda
-tells Claude to read and fix. This means Claude can see the actual bugs and push real code fixes.
+The stable route wrappers live in `hello/page/_fault_cores.py`, while the actual fault
+implementations live in `hello/page/views_sql.py`, `hello/page/views_api.py`, and
+`hello/page/views_db.py`. The self-healing Lambda must only read and patch those split files.
 
 ---
 
@@ -38,7 +39,7 @@ tells Claude to read and fix. This means Claude can see the actual bugs and push
 ## Fault 1: FAULT_SQL_INJECTION_TEST
 
 **Route:** `POST /test-fault/run`
-**File:** `hello/page/views.py` -> `test_fault_run()`
+**File:** `hello/page/views_sql.py` -> `test_fault_run()`
 
 ### What it does
 Executes intentionally malformed SQL (`SELECT FROM`) which always fails with a syntax error.
@@ -64,7 +65,7 @@ db.session.execute(text("SELECT FROM"))  # invalid SQL on purpose
 ## Fault 2: FAULT_EXTERNAL_API_LATENCY
 
 **Route:** `POST /test-fault/external-api`
-**File:** `hello/page/views.py` -> `test_fault_external_api()`
+**File:** `hello/page/views_api.py` -> `test_fault_external_api()`
 
 ### What it does
 Calls the configured mock external API (`$MOCK_API_BASE_URL/data`, default
@@ -98,7 +99,7 @@ r = requests.get(f"{mock_api_base_url}/data", timeout=3)  # 3s timeout vs >3s mo
 ## Fault 3: FAULT_DB_TIMEOUT
 
 **Route:** `POST /test-fault/db-timeout`
-**File:** `hello/page/views.py` -> `test_fault_db_timeout()`
+**File:** `hello/page/views_db.py` -> `test_fault_db_timeout()`
 
 ### What it does
 Sets a 5.5-second statement timeout then runs `SELECT pg_sleep(10)`. The timeout is shorter
@@ -132,13 +133,14 @@ db.session.execute(text("SELECT pg_sleep(10);"))  # always times out (~10s > 5.5
 ### What it does
 1. Deletes all live incidents from PostgreSQL
 2. Clears AWS SSM fault cooldown parameters (so faults can be processed again immediately)
-3. Reads the current `hello/page/views.py` from GitHub
-4. Restores any fault handler whose current function body differs from the faulty template
-5. Pushes the original faulty function bodies back to GitHub (triggers CI/CD redeploy)
+3. Clears the self-healing cooldown markers and records a reset timestamp
+4. Restores `hello/page/views_sql.py`, `hello/page/views_api.py`, and `hello/page/views_db.py`
+5. Pushes the original faulty split-file bodies back to GitHub (triggers CI/CD redeploy)
 
 ### How it restores faulty code
-The original faulty `views.py` content is stored in `hello/page/_faulty_views_template.py`.
-On reset, the endpoint pushes this content to GitHub using either:
+The original faulty split-file content is stored in `hello/page/fault_sql.txt`,
+`hello/page/fault_api.txt`, and `hello/page/fault_db.txt`.
+On reset, the endpoint pushes this content to GitHub using:
 - The GithubTool Lambda (if `GITHUB_LAMBDA_NAME` is set), or
 - The GitHub API directly (if `GITHUB_TOKEN`/`GITHUB_OWNER`/`GITHUB_REPO` are set)
 
@@ -151,7 +153,7 @@ This triggers the CI/CD pipeline which redeploys the faulty code.
 1. **Fault triggers** -> error logged to stderr -> shipped to CloudWatch by ECS
 2. **CloudWatch subscription filter** -> triggers FaultRouter Lambda
 3. **Lambda** -> sends error to Backboard RAG for analysis, then calls Claude API
-4. **Claude reads `hello/page/views.py`** -> sees the bug -> generates fix -> pushes to GitHub
+4. **Claude reads only the routed split file** -> sees the bug -> generates fix -> pushes to GitHub
 5. **GitHub Actions** -> builds, tests, deploys the fix to ECS
 6. **Pipeline callback** -> updates incident status to "resolved" on dashboard
 7. **After deploy** -> triggering the same fault no longer produces an error (code is fixed)
@@ -162,7 +164,7 @@ This triggers the CI/CD pipeline which redeploys the faulty code.
 
 ### Faults not triggering?
 1. Check `ENABLE_FAULT_INJECTION` is `True` in `config/settings.py`
-2. Check `hello/page/views.py` has the faulty code (not a fixed version)
+2. Check the split fault file for the route still has the faulty code (not a fixed version)
 3. Check `git log --oneline -10` for commits like "[FAULT:...]" that may have fixed the faults
 4. For DB timeout: ensure `SET LOCAL statement_timeout = '5500ms'` precedes `pg_sleep(10)`
 

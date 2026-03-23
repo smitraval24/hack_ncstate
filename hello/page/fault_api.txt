@@ -9,7 +9,7 @@ import sys
 import time
 
 import requests
-from flask import current_app
+from flask import current_app, request
 
 from config.settings import ENABLE_FAULT_INJECTION
 from hello.incident.live_store import (
@@ -20,6 +20,9 @@ from hello.page.views import _render_fault
 
 def _record_external_api_incident(reason: str, latency: float) -> None:
     """Persist a live incident for the external API fault route."""
+    if request.headers.get("X-Fault-Verification") == "1":
+        return
+
     create_live_incident(
         error_code="FAULT_EXTERNAL_API_LATENCY",
         route="/test-fault/external-api",

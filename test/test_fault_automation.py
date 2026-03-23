@@ -3,6 +3,8 @@
 import importlib
 import json
 import os
+from unittest.mock import Mock
+
 import pytest
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
@@ -236,7 +238,7 @@ def test_load_solution_context_returns_expected_fault_notes():
     db_notes = fault_router_lambda.load_solution_context("FAULT_DB_TIMEOUT")
 
     assert "Target File: hello/page/views_sql.py" in sql_notes
-    assert "parameter binding" in sql_notes
+    assert "SELECT 1" in sql_notes
     assert "Target File: hello/page/views_api.py" in api_notes
     assert "retry loop" in api_notes
     assert "Target File: hello/page/views_db.py" in db_notes
@@ -270,5 +272,68 @@ def test_build_claude_prompt_includes_known_good_solution():
     )
 
     assert "KNOWN_GOOD_SOLUTION:" in prompt
-    assert "parameter binding" in prompt
-    assert "Compare the current implementation to the packaged solution notes" in prompt
+    assert "SELECT 1" in prompt
+    assert "PATCH-APPLICATION task" in prompt
+    assert "IMPLEMENTATION LOCATION:" in prompt
+    assert "Find test_fault_run() in hello/page/views_sql.py" in prompt
+    assert "stale and must be ignored" in prompt
+    assert "Do NOT choose an alternative fix" in prompt
+
+
+def test_lambda_handler_skips_events_logged_before_latest_demo_reset(monkeypatch):
+    old_event = {
+        "id": "evt-old",
+        "timestamp": 1_700_000_000_000,
+        "message": (
+            "FAULT_DB_TIMEOUT route=/test-fault/db-timeout "
+            "reason=db_statement_timeout latency=5.01"
+        ),
+    }
+    new_event = {
+        "id": "evt-new",
+        "timestamp": 1_700_000_020_000,
+        "message": (
+            "FAULT_DB_TIMEOUT route=/test-fault/db-timeout "
+            "reason=db_statement_timeout latency=5.02"
+        ),
+    }
+
+    monkeypatch.setattr(fault_router_lambda, "_is_self_healing_paused", lambda: False)
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "_get_demo_reset_epoch_seconds",
+        lambda: 1_700_000_010,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "_check_and_set_cooldown",
+        lambda fault_code: False,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "decode_cw_payload",
+        lambda event: {
+            "logGroup": "/ecs/cream-task",
+            "logStream": "ecs/app/1",
+            "logEvents": [old_event, new_event],
+        },
+    )
+    backboard_message = Mock(return_value={"summary": "Use the packaged fix."})
+    invoke_claude = Mock(return_value="patched")
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "backboard_message",
+        backboard_message,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "invoke_claude",
+        invoke_claude,
+    )
+
+    result = fault_router_lambda.lambda_handler({"awslogs": {"data": "unused"}}, None)
+
+    assert result["statusCode"] == 200
+    invoke_claude.assert_called_once()
+    assert backboard_message.call_count >= 1
+    assert invoke_claude.call_args.args[0]["event_id"] == "evt-new"
