@@ -84,7 +84,7 @@ def _safe_clear_fault_cooldown(fault_code: str) -> bool:
             logger.debug("No cooldown parameter found for %s", fault_code)
             return True
         elif _is_access_denied_error(exc):
-            # Log as debug instead of info to reduce noise - this is expected in restricted environments
+            # Log as debug instead of warning to reduce noise - this is expected in restricted environments
             logger.debug(
                 "Skipping cooldown clear for %s: insufficient SSM permissions. "
                 "This is expected in restricted environments.",
@@ -92,12 +92,12 @@ def _safe_clear_fault_cooldown(fault_code: str) -> bool:
             )
             return False
         else:
-            # Other AWS errors should be logged as info to avoid noise
-            logger.info("Could not clear cooldown for %s: %s", fault_code, exc)
+            # Other AWS errors should be logged as debug to avoid noise in restricted environments
+            logger.debug("Could not clear cooldown for %s: %s", fault_code, exc)
             return False
     except Exception as exc:
-        # Non-AWS errors (import errors, etc.) should be logged as info
-        logger.info("Unexpected error clearing cooldown for %s: %s", fault_code, exc)
+        # Non-AWS errors (import errors, etc.) should be logged as debug to reduce noise
+        logger.debug("Unexpected error clearing cooldown for %s: %s", fault_code, exc)
         return False
 
 
@@ -169,13 +169,70 @@ def safe_ssm_operation(operation_type: str, param_name: str, param_value: str = 
             )
             return False, "Access denied (expected in restricted environments)"
         else:
-            # Other AWS errors logged as info to avoid noise
-            logger.info("SSM %s operation failed for %s: %s", operation_type, param_name, exc)
+            # Other AWS errors logged as debug to avoid noise in restricted environments
+            logger.debug("SSM %s operation failed for %s: %s", operation_type, param_name, exc)
             return False, str(exc)
     except Exception as exc:
-        # Non-AWS errors logged as info
-        logger.info("Unexpected error in SSM %s operation for %s: %s", operation_type, param_name, exc)
+        # Non-AWS errors logged as debug to reduce noise
+        logger.debug("Unexpected error in SSM %s operation for %s: %s", operation_type, param_name, exc)
         return False, str(exc)
+
+
+def get_safe_ssm_client():
+    """Get a safe SSM client wrapper that automatically handles permission errors.
+    
+    This should be used instead of boto3.client('ssm') directly to ensure
+    consistent error handling across the application.
+    """
+    import logging
+    
+    class SafeSSMClient:
+        def __init__(self):
+            self.logger = logging.getLogger(__name__)
+            try:
+                import boto3
+                self._client = boto3.client("ssm")
+            except Exception as exc:
+                self.logger.debug("Failed to create SSM client: %s", exc)
+                self._client = None
+        
+        def delete_parameter(self, Name: str, **kwargs):
+            """Safely delete SSM parameter with proper error handling."""
+            if not self._client:
+                self.logger.debug("SSM client not available")
+                return False
+                
+            try:
+                self._client.delete_parameter(Name=Name, **kwargs)
+                self.logger.debug("Successfully deleted parameter: %s", Name)
+                return True
+            except Exception as exc:
+                if _is_parameter_not_found_error(exc):
+                    self.logger.debug("Parameter %s not found for deletion (already cleared)", Name)
+                    return True
+                elif _is_access_denied_error(exc):
+                    self.logger.debug(
+                        "Access denied for delete operation on %s. "
+                        "This is expected in restricted environments.", Name
+                    )
+                    return False
+                else:
+                    self.logger.debug("Failed to delete parameter %s: %s", Name, exc)
+                    return False
+        
+        def get_parameter(self, Name: str, **kwargs):
+            """Safely get SSM parameter with proper error handling."""
+            if not self._client:
+                raise Exception("SSM client not available")
+            return self._client.get_parameter(Name=Name, **kwargs)
+        
+        def put_parameter(self, Name: str, Value: str, **kwargs):
+            """Safely put SSM parameter with proper error handling."""
+            if not self._client:
+                raise Exception("SSM client not available")
+            return self._client.put_parameter(Name=Name, Value=Value, **kwargs)
+    
+    return SafeSSMClient()
 
 
 # Import fault route modules so their @page routes get registered.
