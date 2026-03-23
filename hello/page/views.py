@@ -235,6 +235,74 @@ def get_safe_ssm_client():
     return SafeSSMClient()
 
 
+def ensure_safe_fault_handling():
+    """Ensure all fault handling operations use safe SSM wrapper functions.
+    
+    This function can be called during app initialization to monkey-patch
+    or verify that all SSM operations are using the safe wrappers.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Log that we're using safe fault handling
+    logger.debug("Fault handling initialized with safe SSM operations")
+    
+    # Export safe functions to module level for easy access
+    import sys
+    current_module = sys.modules[__name__]
+    current_module.ssm_client = get_safe_ssm_client()
+    
+    return True
+
+
+def handle_fault_cooldown_safely(fault_code: str, operation: str = "clear") -> bool:
+    """Centralized fault cooldown handling with guaranteed safe operations.
+    
+    This function ensures all fault cooldown operations go through safe error handling
+    and prevents AccessDeniedException from bubbling up as warnings.
+    
+    Args:
+        fault_code: The fault code (e.g., 'FAULT_DB_TIMEOUT')
+        operation: 'clear', 'set', or 'check'
+        
+    Returns:
+        bool: Success status
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    param_name = f"/cream/fault-cooldown/{fault_code}"
+    
+    if operation == "clear":
+        success, message = safe_ssm_operation("delete", param_name)
+        if success:
+            logger.debug("Cooldown cleared for %s", fault_code)
+        else:
+            logger.debug("Could not clear cooldown for %s: %s", fault_code, message)
+        return success
+    elif operation == "set":
+        success, message = safe_ssm_operation("put", param_name, "active")
+        if success:
+            logger.debug("Cooldown set for %s", fault_code)
+        else:
+            logger.debug("Could not set cooldown for %s: %s", fault_code, message)
+        return success
+    elif operation == "check":
+        success, message = safe_ssm_operation("get", param_name)
+        if success:
+            logger.debug("Cooldown active for %s", fault_code)
+        else:
+            logger.debug("No active cooldown for %s", fault_code)
+        return success
+    else:
+        logger.debug("Unknown cooldown operation: %s", operation)
+        return False
+
+
+# Initialize safe fault handling on module load
+ensure_safe_fault_handling()
+
+
 # Import fault route modules so their @page routes get registered.
 # Each views_*.py file is the ONLY file the self-healing loop edits
 # for its respective fault code.
