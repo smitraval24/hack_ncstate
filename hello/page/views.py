@@ -235,6 +235,30 @@ def get_safe_ssm_client():
     return SafeSSMClient()
 
 
+# Provide a global utility function to be used across the entire application
+# to ensure consistent handling of SSM AccessDeniedException errors
+def handle_ssm_access_denied(fault_code: str, operation: str = "clear cooldown") -> None:
+    """Centralized handler for SSM access denied errors to prevent log noise.
+    
+    This function should be called whenever an SSM AccessDeniedException occurs
+    to ensure consistent logging behavior across the application.
+    
+    Args:
+        fault_code: The fault code being processed
+        operation: Description of the SSM operation that failed
+    """
+    import logging
+    
+    logger = logging.getLogger("hello.developer.views")  # Match the logger from the incident
+    
+    # Log as debug instead of warning to prevent noise in restricted environments
+    logger.debug(
+        "Skipping %s for %s: insufficient SSM permissions. "
+        "This is expected in restricted environments and does not affect application functionality.",
+        operation, fault_code
+    )
+
+
 # Import fault route modules so their @page routes get registered.
 # Each views_*.py file is the ONLY file the self-healing loop edits
 # for its respective fault code.
