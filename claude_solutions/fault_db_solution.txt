@@ -1,0 +1,27 @@
+Fault Code: FAULT_DB_TIMEOUT
+Target File: hello/page/views_db.py
+Target Function: test_fault_db_timeout
+
+Goal:
+Make POST /test-fault/db-timeout finish successfully with HTTP 200 instead of timing out.
+
+Authoritative Fix:
+- Preserve the existing route decorator, function name, and fault-page rendering contract.
+- Preserve any `_is_fault_verification_request()` behavior already present so verification probes do not create incidents.
+- Remove the guaranteed timeout combination:
+  `SET LOCAL statement_timeout = '5500ms'`
+  `SELECT pg_sleep(10);`
+- Replace it with a query that completes comfortably within the timeout window, such as:
+  `SET LOCAL statement_timeout = '30000ms';`
+  `SELECT pg_sleep(1);`
+- Commit the transaction after the successful query.
+- Leave rollback and incident creation logic in place for genuine failures.
+
+Important Constraints:
+- The healed route must return an HTTP status below 400 during post-deploy verification.
+- Do not keep the artificial 5-second minimum delay once the fault is fixed.
+- Do not change the route path `/test-fault/db-timeout`.
+
+Implementation Notes:
+- The success path should be fast and should populate the existing `latency` field.
+- If the current file already includes part of the remediation, keep the working pieces and only correct the remaining fault.

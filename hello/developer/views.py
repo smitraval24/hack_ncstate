@@ -730,7 +730,17 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
         right_opened = right.get("timestamp_opened")
         if not left_opened or not right_opened:
             return True
-        return abs(left_opened - right_opened) <= merge_window
+        if abs(left_opened - right_opened) > merge_window:
+            return False
+
+        left_resolved = left.get("timestamp_resolved")
+        right_resolved = right.get("timestamp_resolved")
+        if left_resolved and right_opened and right_opened > left_resolved:
+            return False
+        if right_resolved and left_opened and left_opened > right_resolved:
+            return False
+
+        return True
 
     # Index CloudWatch incidents by merge key for matching.
     cw_by_key: dict[tuple[str, str, str], list[dict]] = {}

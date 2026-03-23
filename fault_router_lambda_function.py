@@ -2,6 +2,7 @@
 
 import os, json, base64, gzip, urllib.request, urllib.parse, re, time
 from datetime import datetime, timezone
+from pathlib import Path
 import boto3
 
 # ==============================
@@ -29,6 +30,31 @@ FAULT_FILE_MAP = {
     "FAULT_EXTERNAL_API_LATENCY": "hello/page/views_api.py",
     "FAULT_DB_TIMEOUT": "hello/page/views_db.py",
 }
+FAULT_FUNCTION_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "test_fault_run",
+    "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
+    "FAULT_DB_TIMEOUT": "test_fault_db_timeout",
+}
+FAULT_SOLUTION_FILE_MAP = {
+    "FAULT_SQL_INJECTION_TEST": "claude_solutions/fault_sql_solution.txt",
+    "FAULT_EXTERNAL_API_LATENCY": "claude_solutions/fault_api_solution.txt",
+    "FAULT_DB_TIMEOUT": "claude_solutions/fault_db_solution.txt",
+}
+FAULT_FIX_HINTS = {
+    "FAULT_SQL_INJECTION_TEST": (
+        "The route must stop executing unsafe or malformed SQL and should "
+        "succeed by using safe parameter binding."
+    ),
+    "FAULT_EXTERNAL_API_LATENCY": (
+        "The route needs a longer timeout plus retry logic so transient "
+        "latency and wrong-data responses no longer keep the fault active."
+    ),
+    "FAULT_DB_TIMEOUT": (
+        "The route must stop guaranteeing a statement timeout and instead run "
+        "a query that completes successfully within the allowed time."
+    ),
+}
+BASE_DIR = Path(__file__).resolve().parent
 
 
 ROUTE_RE = re.compile(r"\broute=([^\s]+)")
@@ -99,6 +125,65 @@ def backboard_message(thread_id: str, content: str) -> dict:
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 
+
+def load_solution_context(fault_code: str) -> str:
+    """Load the packaged known-good solution notes for a fault code."""
+    relative_path = FAULT_SOLUTION_FILE_MAP.get(fault_code)
+    if not relative_path:
+        return ""
+
+    try:
+        return (BASE_DIR / relative_path).read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        print(f"SOLUTION_CONTEXT_ERROR {fault_code}: {exc}")
+        return ""
+
+
+def build_claude_prompt(
+    incident: dict,
+    analysis: dict,
+    target_file: str,
+    target_function: str,
+    forbidden_for_this_fault: tuple[str, ...],
+    fix_hint: str,
+    solution_context: str,
+) -> str:
+    """Build the Claude remediation prompt with packaged solution guidance."""
+    solution_section = solution_context or "No packaged solution notes found."
+
+    return f"""You are a remediation agent. Fix the bug in the file below.
+
+INCIDENT:
+{json.dumps(incident, indent=2)}
+
+BACKBOARD_ANALYSIS:
+{json.dumps(analysis, indent=2)}
+
+TARGET FILE: {target_file}
+TARGET FUNCTION: {target_function}()
+FIX HINT: {fix_hint}
+FORBIDDEN CONTEXT FILES: {", ".join(forbidden_for_this_fault)}
+
+KNOWN_GOOD_SOLUTION:
+{solution_section}
+
+RULES:
+1. Read ONLY `{target_file}` from GitHub — this file contains exactly one fault handler.
+2. Analyze the current file against the known-good solution and apply the minimal correct remediation.
+3. Fix the bug in `{target_function}()` so it succeeds instead of failing.
+4. Keep all imports and the function signature intact. You may add new imports if needed.
+5. Preserve any verification-only safeguards already in the file so health probes do not create incidents.
+6. Do NOT read, inspect, or reference any other fault file or template file.
+7. Call push_github_fix with the full corrected file content.
+8. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
+
+Steps:
+1. Call read_github_file to read {target_file}
+2. Compare the current implementation to the packaged solution notes
+3. Update only the target file so `{target_function}()` returns success after remediation
+4. Call push_github_fix with the corrected file
+5. Report what you changed"""
+
 # This function handles the invoke claude work for this file.
 def invoke_claude(incident, analysis):
     # Each fault code has its own isolated file — Claude only sees that one file
@@ -150,68 +235,22 @@ def invoke_claude(incident, analysis):
         }
     ]
 
-    # Map fault codes to their specific route function names
-    fault_function_map = {
-        "FAULT_SQL_INJECTION_TEST": "test_fault_run",
-        "FAULT_EXTERNAL_API_LATENCY": "test_fault_external_api",
-        "FAULT_DB_TIMEOUT": "test_fault_db_timeout",
-    }
-    target_function = fault_function_map.get(incident["fault_code"], "unknown")
-
-    fault_fix_hints = {
-        "FAULT_SQL_INJECTION_TEST": (
-            "The function test_fault_run() executes malformed SQL: `SELECT FROM` "
-            "(missing column/table). Fix the SQL query so it executes successfully, "
-            "e.g. `SELECT 1`. When the query succeeds, the function should return "
-            "status 'ok' (HTTP 200) instead of raising an exception."
-        ),
-        "FAULT_EXTERNAL_API_LATENCY": (
-            "The function test_fault_external_api() calls the mock API with a 3-second "
-            "timeout that is too short (the API can exceed 3 seconds) and may return "
-            "malformed data instead of {'value': 42}. Preserve the env-based "
-            "MOCK_API_BASE_URL lookup (fallback http://mock_api:5001), increase the timeout "
-            "to at least 10 seconds, validate the payload, and make the call succeed "
-            "reliably after remediation."
-        ),
-        "FAULT_DB_TIMEOUT": (
-            "The function test_fault_db_timeout() sets statement_timeout='5500ms' then runs "
-            "pg_sleep(10), so the request hangs for a bit over 5 seconds before PostgreSQL "
-            "cancels it. Fix by either removing the statement_timeout, increasing it above "
-            "the sleep duration, or reducing the pg_sleep so the query completes without a "
-            "timeout error."
-        ),
-    }
-    fix_hint = fault_fix_hints.get(incident["fault_code"], "Fix the identified issue.")
+    target_function = FAULT_FUNCTION_MAP.get(incident["fault_code"], "unknown")
+    fix_hint = FAULT_FIX_HINTS.get(incident["fault_code"], "Fix the identified issue.")
+    solution_context = load_solution_context(incident["fault_code"])
 
     messages = [
         {
             "role": "user",
-            "content": f"""You are a remediation agent. Fix the bug in the file below.
-
-INCIDENT:
-{json.dumps(incident, indent=2)}
-
-BACKBOARD_ANALYSIS:
-{json.dumps(analysis, indent=2)}
-
-TARGET FILE: {target_file}
-TARGET FUNCTION: {target_function}()
-FIX HINT: {fix_hint}
-FORBIDDEN CONTEXT FILES: {", ".join(forbidden_for_this_fault)}
-
-RULES:
-1. Read ONLY `{target_file}` from GitHub — this file contains exactly one fault handler.
-2. Fix the bug in `{target_function}()` so it succeeds instead of failing.
-3. Keep all imports and the function signature intact. You may add new imports if needed.
-4. Do NOT read, inspect, or reference any other fault file or template file.
-5. Call push_github_fix with the full corrected file content.
-6. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
-
-Steps:
-1. Call read_github_file to read {target_file}
-2. Identify and fix the bug in `{target_function}()`
-3. Call push_github_fix with the corrected file
-4. Report what you changed"""
+            "content": build_claude_prompt(
+                incident=incident,
+                analysis=analysis,
+                target_file=target_file,
+                target_function=target_function,
+                forbidden_for_this_fault=forbidden_for_this_fault,
+                fix_hint=fix_hint,
+                solution_context=solution_context,
+            ),
         }
     ]
 

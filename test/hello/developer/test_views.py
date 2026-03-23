@@ -115,6 +115,27 @@ class TestDeveloperIncidentViews(ViewTestMixin):
 
         assert [incident["id"] for incident in merged] == ["LIVE-0001", "CW-0001"]
 
+    def test_merge_incidents_keeps_retriggered_live_incident_separate_after_resolution(self):
+        now = datetime.now().replace(microsecond=0)
+        live_incident = _make_incident(
+            "LIVE-0002",
+            now,
+            None,
+            "detected",
+            log_marker="external_timeout",
+        )
+        cloudwatch_incident = _make_incident(
+            "CW-0002",
+            now - timedelta(minutes=6),
+            now - timedelta(minutes=1),
+            "resolved",
+            log_marker="external_timeout",
+        )
+
+        merged = _merge_incidents([live_incident], [cloudwatch_incident])
+
+        assert [incident["id"] for incident in merged] == ["LIVE-0002", "CW-0002"]
+
     @patch("hello.developer.views.http_requests.post")
     @patch("hello.developer.views.http_requests.get")
     def test_verify_fault_route_requires_latest_build_sha(

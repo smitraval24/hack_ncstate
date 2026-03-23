@@ -1,0 +1,26 @@
+Fault Code: FAULT_EXTERNAL_API_LATENCY
+Target File: hello/page/views_api.py
+Target Function: test_fault_external_api
+
+Goal:
+Make POST /test-fault/external-api return HTTP 200 reliably after remediation.
+
+Authoritative Fix:
+- Preserve the existing route decorator, helper usage, and `MOCK_API_BASE_URL` environment-variable lookup with the same fallback.
+- Preserve any `_is_fault_verification_request()` behavior so verification probes do not create incidents.
+- Replace the brittle single request with a small retry loop.
+- Increase the request timeout from 3 seconds to at least 10 seconds.
+- Retry on timeout, connection errors, HTTP errors, and malformed payloads where `payload.get("value") != 42`.
+- Only return success when the payload is valid, for example `{"value": 42}`.
+- If all attempts fail, keep the existing fault-rendering behavior and incident recording logic.
+
+Important Constraints:
+- The healed route must return an HTTP status below 400 when the external API eventually responds with valid data.
+- Keep `_record_external_api_incident(...)` for true failure cases.
+- Do not change the route path `/test-fault/external-api`.
+- Preserve the rendered result shape as much as possible.
+
+Implementation Notes:
+- Use 2-3 attempts with short backoff, for example `time.sleep(min(2 ** attempt, 4))`.
+- On success, compute latency and return `_render_fault(result), 200`.
+- If the current file already has partial fixes, reconcile them instead of rewriting unrelated code.

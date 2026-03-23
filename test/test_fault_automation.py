@@ -170,3 +170,48 @@ def test_push_github_fix_rejects_unexpected_file():
     assert body["ok"] is False
     assert "only" in body["error"].lower()
     assert "views_" in body["error"].lower()
+
+
+# This function runs the solution context load work used in this file.
+def test_load_solution_context_returns_expected_fault_notes():
+    sql_notes = fault_router_lambda.load_solution_context("FAULT_SQL_INJECTION_TEST")
+    api_notes = fault_router_lambda.load_solution_context("FAULT_EXTERNAL_API_LATENCY")
+    db_notes = fault_router_lambda.load_solution_context("FAULT_DB_TIMEOUT")
+
+    assert "Target File: hello/page/views_sql.py" in sql_notes
+    assert "parameter binding" in sql_notes
+    assert "Target File: hello/page/views_api.py" in api_notes
+    assert "retry loop" in api_notes
+    assert "Target File: hello/page/views_db.py" in db_notes
+    assert "statement_timeout" in db_notes
+
+
+# This function runs the claude prompt includes packaged solution guidance work used in this file.
+def test_build_claude_prompt_includes_known_good_solution():
+    incident = {
+        "fault_code": "FAULT_SQL_INJECTION_TEST",
+        "raw_message": (
+            "FAULT_SQL_INJECTION_TEST route=/test-fault/run "
+            "reason=invalid_sql_executed"
+        ),
+    }
+    analysis = {"summary": "Use the known-good SQL remediation."}
+
+    prompt = fault_router_lambda.build_claude_prompt(
+        incident=incident,
+        analysis=analysis,
+        target_file="hello/page/views_sql.py",
+        target_function="test_fault_run",
+        forbidden_for_this_fault=(
+            "hello/page/_faulty_views_template.py",
+            "hello/page/views.py",
+        ),
+        fix_hint="Use safe parameter binding.",
+        solution_context=fault_router_lambda.load_solution_context(
+            "FAULT_SQL_INJECTION_TEST"
+        ),
+    )
+
+    assert "KNOWN_GOOD_SOLUTION:" in prompt
+    assert "parameter binding" in prompt
+    assert "Compare the current implementation to the packaged solution notes" in prompt
