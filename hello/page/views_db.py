@@ -39,7 +39,7 @@ def test_fault_db_timeout():
 
     try:
         db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
-        db.session.execute(text("SELECT pg_sleep(10);"))
+        db.session.execute(text("SELECT pg_sleep(1);"))
         latency = time.time() - start
         result = {
             "status": "ok",
