@@ -1304,148 +1304,47 @@ def reset_incidents():
 
 
 def _reset_faulty_code(fault_codes: list[str]) -> dict:
-    """Push the selected faulty files back to GitHub (one file per fault code)."""
-    from config.settings import (
-        GITHUB_LAMBDA_NAME,
-        GITHUB_BRANCH,
-        GITHUB_OWNER,
-        GITHUB_REPO,
-        GITHUB_TOKEN,
-    )
-    from hello.page._faulty_views_template import FAULT_FILE_MAP
+    """Invoke the Reset Lambda to restore all fault files from their fault_*.txt sources.
 
-    resettable_fault_codes = [
-        fc for fc in fault_codes if fc in FAULT_FILE_MAP
-    ]
+    The Lambda reads fault_api.txt, fault_db.txt, fault_sql.txt from GitHub
+    and pushes their content as views_api.py, views_db.py, views_sql.py.
+    The push to main triggers the CI/CD pipeline for ECS deployment.
+    """
+    from config.settings import RESET_LAMBDA_NAME
 
-    try:
-        drifted_fault_codes = _fault_codes_differing_from_template()
-        resettable_fault_codes = sorted(
-            set(resettable_fault_codes) | set(drifted_fault_codes)
-        )
-        if not resettable_fault_codes:
-            logger.info("Reset skipped: all fault files already match the faulty template")
-            return {
-                "method": "none",
-                "success": True,
-                "skipped": True,
-                "fault_codes": [],
-                "message": "Fault files already match the faulty template.",
-            }
-    except Exception as exc:
-        logger.warning("Could not check fault file drift: %s", exc)
-
-    results = {}
-    overall_success = True
-
-    for fault_code in resettable_fault_codes:
-        info = FAULT_FILE_MAP[fault_code]
-        file_path = info["file_path"]
-        reset_content = info["content"]
-        commit_message = f"[RESET] Restore faulty handler for {fault_code}"
-
-        # Method 1: Invoke GithubTool Lambda
-        if GITHUB_LAMBDA_NAME:
-            try:
-                body = _invoke_github_lambda(
-                    "push_github_fix",
-                    [
-                        {"name": "file_path", "value": file_path},
-                        {"name": "file_content", "value": reset_content},
-                        {"name": "commit_message", "value": commit_message},
-                    ],
-                )
-                no_change = body.get("no_change", False)
-                logger.info("Reset %s via Lambda: %s", fault_code, body)
-                results[fault_code] = {
-                    "method": "lambda",
-                    "success": body.get("ok", False),
-                    "no_change": no_change,
-                    "file_path": file_path,
-                }
-                if not body.get("ok", False):
-                    overall_success = False
-                continue
-            except Exception as e:
-                logger.warning("Lambda reset failed for %s, trying GitHub API: %s", fault_code, e)
-
-        # Method 2: GitHub API directly
-        if GITHUB_TOKEN and GITHUB_OWNER and GITHUB_REPO:
-            try:
-                api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
-                headers = {
-                    "Authorization": f"Bearer {GITHUB_TOKEN}",
-                    "Accept": "application/vnd.github+json",
-                    "Content-Type": "application/json",
-                }
-
-                get_resp = http_requests.get(
-                    f"{api_url}?ref={GITHUB_BRANCH}",
-                    headers=headers,
-                    timeout=10,
-                )
-                get_resp.raise_for_status()
-                file_sha = get_resp.json()["sha"]
-
-                content_b64 = base64.b64encode(reset_content.encode("utf-8")).decode("utf-8")
-                put_resp = http_requests.put(
-                    api_url,
-                    headers=headers,
-                    json={
-                        "message": commit_message,
-                        "content": content_b64,
-                        "sha": file_sha,
-                        "branch": GITHUB_BRANCH,
-                    },
-                    timeout=15,
-                )
-                put_resp.raise_for_status()
-                commit_sha = put_resp.json().get("commit", {}).get("sha", "")
-                logger.info("Reset %s via GitHub API: %s", fault_code, commit_sha)
-                results[fault_code] = {
-                    "method": "github_api",
-                    "success": True,
-                    "file_path": file_path,
-                    "commit_sha": commit_sha,
-                }
-                continue
-            except Exception as e:
-                logger.warning("GitHub API reset failed for %s: %s", fault_code, e)
-                results[fault_code] = {
-                    "method": "github_api",
-                    "success": False,
-                    "file_path": file_path,
-                    "error": str(e),
-                }
-                overall_success = False
-                continue
-
-        results[fault_code] = {
+    if not RESET_LAMBDA_NAME:
+        logger.error("RESET_LAMBDA_NAME is not configured")
+        return {
             "method": "none",
             "success": False,
-            "file_path": file_path,
-            "error": "No GitHub credentials configured",
+            "error": "RESET_LAMBDA_NAME is not configured",
         }
-        overall_success = False
 
-    # Check if any file was skipped due to no_change — if so, the GitHub
-    # Actions deploy won't trigger, so we must force an ECS redeployment
-    # to ensure the container runs the faulty code from the latest image.
-    any_committed = any(
-        not r.get("no_change", False) and r.get("success", False)
-        for r in results.values()
-    )
-    forced_deploy = False
-    if not any_committed:
-        forced_deploy = _force_ecs_deployment()
+    try:
+        import boto3
 
-    return {
-        "method": "per_file",
-        "success": overall_success,
-        "fault_codes": resettable_fault_codes,
-        "per_file_results": results,
-        "forced_ecs_deploy": forced_deploy,
-    }
+        response = boto3.client("lambda").invoke(
+            FunctionName=RESET_LAMBDA_NAME,
+            Payload=json.dumps({"source": "reset_all_button"}).encode("utf-8"),
+        )
+        result = json.loads(response["Payload"].read())
+        logger.info("Reset Lambda response: %s", result)
+
+        return {
+            "method": "reset_lambda",
+            "success": result.get("success", False),
+            "fault_codes": list(FAULT_FILE_PATH_MAP.keys()),
+            "per_file_results": result.get("results", {}),
+            "any_committed": result.get("any_committed", False),
+            "forced_ecs_deploy": result.get("forced_ecs_deploy", False),
+        }
+    except Exception as e:
+        logger.exception("Reset Lambda invocation failed")
+        return {
+            "method": "reset_lambda",
+            "success": False,
+            "error": str(e),
+        }
 
 
 def _force_ecs_deployment() -> bool:

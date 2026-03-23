@@ -1,7 +1,7 @@
 """Fault handler for FAULT_DB_TIMEOUT.
 
-This is the ONLY file the self-healing loop may edit when remediating
-this fault code.  The route is registered on the page blueprint.
+This file is the ONLY file the self-healing loop may edit when remediating
+this fault code.  The stable route wrapper in _fault_cores.py delegates here.
 """
 
 import sys
@@ -15,10 +15,9 @@ from hello.extensions import db
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import page, _render_fault
+from hello.page.views import _render_fault
 
 
-@page.post("/test-fault/db-timeout")
 def test_fault_db_timeout():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -28,16 +27,15 @@ def test_fault_db_timeout():
 
     start = time.time()
 
-    # FIXED: Increased statement timeout to 12 seconds to accommodate the 10-second pg_sleep
-    # This prevents automatic timeout failures and allows for proper database operation
-    # under normal conditions while still testing timeout behavior when DB is truly slow/unavailable
+    # INTENTIONAL BUG: minimum 5s delay to simulate a slow DB timeout.
+    # With a real DB, pg_sleep(10) + statement_timeout='5500ms' takes ~5.5s.
+    # If the DB is unreachable the connection error is instant, so we
+    # enforce a floor so the response always visibly hangs.
     min_delay = 5.0
 
     try:
-        # Increased timeout from 5500ms to 12000ms (12 seconds) to allow pg_sleep(10) to complete
-        db.session.execute(text("SET LOCAL statement_timeout = '12000ms';"))
+        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
         db.session.execute(text("SELECT pg_sleep(10);"))
-        db.session.commit()  # Ensure the transaction is committed
         latency = time.time() - start
         result = {
             "status": "ok",

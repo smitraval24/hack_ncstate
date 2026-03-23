@@ -1,7 +1,7 @@
 """Fault handler for FAULT_EXTERNAL_API_LATENCY.
 
-This is the ONLY file the self-healing loop may edit when remediating
-this fault code.  The route is registered on the page blueprint.
+This file is the ONLY file the self-healing loop may edit when remediating
+this fault code.  The stable route wrapper in _fault_cores.py delegates here.
 """
 
 import os
@@ -15,7 +15,7 @@ from config.settings import ENABLE_FAULT_INJECTION
 from hello.incident.live_store import (
     create_incident as create_live_incident,
 )
-from hello.page.views import page, _render_fault
+from hello.page.views import _render_fault
 
 
 def _record_external_api_incident(reason: str, latency: float) -> None:
@@ -28,47 +28,6 @@ def _record_external_api_incident(reason: str, latency: float) -> None:
     )
 
 
-def _make_external_api_call_with_retry(url: str, max_retries: int = 2) -> tuple:
-    """
-    Make external API call with retry logic and improved timeout handling.
-    
-    Returns:
-        tuple: (response_object, latency) or (None, latency) on failure
-    """
-    # Separate connection and read timeouts for better control
-    # Connection timeout: 5s (time to establish connection)
-    # Read timeout: 10s (time to read response once connected)
-    timeout = (5, 10)
-    
-    for attempt in range(max_retries + 1):
-        start_time = time.time()
-        
-        try:
-            current_app.logger.info(f"External API call attempt {attempt + 1}/{max_retries + 1}")
-            response = requests.get(url, timeout=timeout)
-            latency = time.time() - start_time
-            current_app.logger.info(f"external_call_latency={latency:.2f}")
-            response.raise_for_status()
-            return response, latency
-            
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.HTTPError) as e:
-            latency = time.time() - start_time
-            current_app.logger.warning(f"External API call attempt {attempt + 1} failed: {type(e).__name__} after {latency:.2f}s")
-            
-            # If this is the last attempt, re-raise the exception
-            if attempt == max_retries:
-                raise
-            
-            # Exponential backoff: 0.5s, then 1s
-            sleep_time = 0.5 * (2 ** attempt)
-            current_app.logger.info(f"Retrying in {sleep_time}s...")
-            time.sleep(sleep_time)
-    
-    # This should never be reached due to the raise above, but included for completeness
-    return None, time.time() - start_time
-
-
-@page.post("/test-fault/external-api")
 def test_fault_external_api():
     if not ENABLE_FAULT_INJECTION:
         return "", 404
@@ -80,35 +39,13 @@ def test_fault_external_api():
     start = time.time()
 
     try:
-        # Use improved external API call with retry logic
-        r, latency = _make_external_api_call_with_retry(f"{mock_api_base_url}/data")
-        
-        try:
-            payload = r.json()
-        except ValueError as json_err:
-            # Handle JSON parsing errors
-            latency = time.time() - start
-            result = {
-                "status": "error",
-                "error_code": error_code,
-                "detail": "invalid_json",
-                "latency": f"{latency:.2f}s",
-                "error": str(json_err),
-            }
-            msg = (
-                f"{error_code} route=/test-fault/external-api "
-                f"reason=invalid_json latency={latency:.2f}"
-            )
-            print(msg, file=sys.stderr)
-            current_app.logger.error(msg)
-
-            try:
-                _record_external_api_incident("invalid_json", latency)
-            except Exception:
-                current_app.logger.exception("Failed to create incident for %s", error_code)
-
-            return _render_fault(result), 504
-        
+        # INTENTIONAL BUG: 3s timeout against mock API with a high chance of
+        # latency or malformed data.
+        r = requests.get(f"{mock_api_base_url}/data", timeout=3)
+        latency = time.time() - start
+        current_app.logger.info(f"external_call_latency={latency:.2f}")
+        r.raise_for_status()
+        payload = r.json()
         if payload.get("value") != 42:
             result = {
                 "status": "error",

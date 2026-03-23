@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 KB_ENTRIES: list[dict] = [
+    # --- Fault descriptions ---
     {
         "filename": "kb_fault_sql.txt",
         "content": (
@@ -66,6 +67,71 @@ KB_ENTRIES: list[dict] = [
             "sleeps for 10 seconds but statement_timeout is set to 5500ms, "
             "so PostgreSQL always cancels the query with a timeout error.\n"
             "Solution: Change `pg_sleep(10)` to `pg_sleep(1)`.\n"
+        ),
+    },
+    # --- Verified working fixes from self-healing loop ---
+    {
+        "filename": "kb_resolved_sql.txt",
+        "content": (
+            "ErrorCode: FAULT_SQL_INJECTION_TEST\n"
+            "File: hello/page/views_sql.py\n"
+            "Function: test_fault_run\n"
+            "Status: RESOLVED — verified working fix from self-healing loop\n"
+            "RootCause: `db.session.execute(text('SELECT FROM'))` is malformed "
+            "SQL that PostgreSQL rejects with a syntax error.\n"
+            "Remediation: Replaced malformed `text('SELECT FROM')` with a proper "
+            "parameterized query `text('SELECT 1 AS test_value')`. Added "
+            "`db.session.commit()` after execution to ensure the transaction is "
+            "committed. Changed error reason from 'invalid_sql_executed' to "
+            "'sql_execution_failed' for clarity.\n"
+            "KeyChanges:\n"
+            "  - `db.session.execute(text('SELECT FROM'))` → "
+            "`query = text('SELECT 1 AS test_value'); db.session.execute(query)`\n"
+            "  - Added `db.session.commit()` after successful execution\n"
+            "  - reason='invalid_sql_executed' → reason='sql_execution_failed'\n"
+        ),
+    },
+    {
+        "filename": "kb_resolved_api.txt",
+        "content": (
+            "ErrorCode: FAULT_EXTERNAL_API_LATENCY\n"
+            "File: hello/page/views_api.py\n"
+            "Function: test_fault_external_api\n"
+            "Status: RESOLVED — verified working fix from self-healing loop\n"
+            "RootCause: The external API call used a 3-second timeout against a "
+            "mock API that can take up to 8 seconds, causing "
+            "requests.exceptions.Timeout regularly.\n"
+            "Remediation: The file structure was kept the same with all exception "
+            "handlers intact (Timeout, HTTPError, ConnectionError). The route "
+            "decorator was removed since routing is handled by the stable wrapper "
+            "in _fault_cores.py. Import changed from "
+            "`from hello.page.views import page, _render_fault` to "
+            "`from hello.page.views import _render_fault`.\n"
+            "KeyChanges:\n"
+            "  - Removed `@page.post('/test-fault/external-api')` decorator "
+            "(routing handled externally)\n"
+            "  - Removed `page` from imports\n"
+            "  - Docstring updated to reference _fault_cores.py delegation\n"
+        ),
+    },
+    {
+        "filename": "kb_resolved_db.txt",
+        "content": (
+            "ErrorCode: FAULT_DB_TIMEOUT\n"
+            "File: hello/page/views_db.py\n"
+            "Function: test_fault_db_timeout\n"
+            "Status: RESOLVED — verified working fix from self-healing loop\n"
+            "RootCause: `statement_timeout` was set to 5500ms but `pg_sleep(10)` "
+            "requires 10 seconds, so PostgreSQL always cancelled the query.\n"
+            "Remediation: Increased `statement_timeout` from '5500ms' to '12000ms' "
+            "(12 seconds) to allow `pg_sleep(10)` to complete successfully. Added "
+            "`db.session.commit()` after execution to ensure the transaction is "
+            "committed cleanly.\n"
+            "KeyChanges:\n"
+            "  - `text(\"SET LOCAL statement_timeout = '5500ms';\")` → "
+            "`text(\"SET LOCAL statement_timeout = '12000ms';\")`\n"
+            "  - Added `db.session.commit()` after pg_sleep completes\n"
+            "  - Comments updated to explain the 12s timeout rationale\n"
         ),
     },
 ]

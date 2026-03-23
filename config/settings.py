@@ -47,6 +47,7 @@ GITHUB_OWNER = os.getenv("GITHUB_OWNER", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_LAMBDA_NAME = os.getenv("GITHUB_LAMBDA_NAME", "")
+RESET_LAMBDA_NAME = os.getenv("RESET_LAMBDA_NAME", "")
 
 # AWS CloudWatch Logging.
 CLOUDWATCH_ENABLED = bool(strtobool(os.getenv("CLOUDWATCH_ENABLED", "false")))
