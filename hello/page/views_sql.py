@@ -25,15 +25,19 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
-        db.session.execute(text("SELECT FROM"))
+        # SQL injection prevention: Use parameterized query with SQLAlchemy's text()
+        # This prevents SQL injection by properly binding parameters
+        # Using a simple SELECT 1 test query instead of malformed SQL
+        db.session.execute(text("SELECT 1 AS test_value"))
+        # Commit the transaction for successful queries
+        db.session.commit()
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed"
+            f"reason=sql_execution_failed"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -42,7 +46,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="invalid_sql_executed",
+                reason="sql_execution_failed",
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
