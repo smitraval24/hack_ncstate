@@ -1294,6 +1294,7 @@ def reset_incidents():
             "cooldown_reset_errors": cooldown_reset["errors"],
             "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
+            "forced_ecs_deploy": code_reset_result.get("forced_ecs_deploy", False),
         })
     except Exception as e:
         logger.exception("Failed to reset incidents")
@@ -1354,10 +1355,12 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
                         {"name": "commit_message", "value": commit_message},
                     ],
                 )
+                no_change = body.get("no_change", False)
                 logger.info("Reset %s via Lambda: %s", fault_code, body)
                 results[fault_code] = {
                     "method": "lambda",
                     "success": body.get("ok", False),
+                    "no_change": no_change,
                     "file_path": file_path,
                 }
                 if not body.get("ok", False):
@@ -1425,12 +1428,44 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
         }
         overall_success = False
 
+    # Check if any file was skipped due to no_change — if so, the GitHub
+    # Actions deploy won't trigger, so we must force an ECS redeployment
+    # to ensure the container runs the faulty code from the latest image.
+    any_committed = any(
+        not r.get("no_change", False) and r.get("success", False)
+        for r in results.values()
+    )
+    forced_deploy = False
+    if not any_committed:
+        forced_deploy = _force_ecs_deployment()
+
     return {
         "method": "per_file",
         "success": overall_success,
         "fault_codes": resettable_fault_codes,
         "per_file_results": results,
+        "forced_ecs_deploy": forced_deploy,
     }
+
+
+def _force_ecs_deployment() -> bool:
+    """Force a new ECS deployment so the service pulls the latest task definition."""
+    ecs_cluster = os.getenv("ECS_CLUSTER", "creamandonion")
+    ecs_service = os.getenv("ECS_SERVICE", "cream-task-service")
+
+    try:
+        import boto3
+
+        boto3.client("ecs").update_service(
+            cluster=ecs_cluster,
+            service=ecs_service,
+            forceNewDeployment=True,
+        )
+        logger.info("Forced ECS redeployment for %s/%s", ecs_cluster, ecs_service)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to force ECS redeployment: %s", exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
