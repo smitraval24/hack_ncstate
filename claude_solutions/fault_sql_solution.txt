@@ -1,6 +1,8 @@
 Fault Code: FAULT_SQL_INJECTION_TEST
-Target File: hello/page/views_sql.py
+Target File: hello/page/views_sql.py   ← THIS IS THE ONLY FILE YOU MAY TOUCH
 Target Function: test_fault_run
+
+FORBIDDEN: Do NOT read or modify hello/page/views.py — it is OFF LIMITS.
 
 EXACT BUG (line 30):
         db.session.execute(text("SELECT FROM"))
@@ -10,4 +12,4 @@ EXACT FIX — replace that line with:
 
 That is the ONLY change. Do not add imports, validation, sanitization,
 middleware, helper functions, or any other code. Change this one string
-and nothing else.
+in hello/page/views_sql.py and nothing else.

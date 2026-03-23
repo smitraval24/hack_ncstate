@@ -1,6 +1,8 @@
 Fault Code: FAULT_DB_TIMEOUT
-Target File: hello/page/views_db.py
+Target File: hello/page/views_db.py   ← THIS IS THE ONLY FILE YOU MAY TOUCH
 Target Function: test_fault_db_timeout
+
+FORBIDDEN: Do NOT read or modify hello/page/views.py — it is OFF LIMITS.
 
 EXACT BUG (line 39):
         db.session.execute(text("SELECT pg_sleep(10);"))
@@ -10,4 +12,4 @@ EXACT FIX — replace that line with:
 
 That is the ONLY change. Do not modify statement_timeout, add retry
 logic, change error handling, or add any other code. Change
-pg_sleep(10) to pg_sleep(1) and nothing else.
+pg_sleep(10) to pg_sleep(1) in hello/page/views_db.py and nothing else.

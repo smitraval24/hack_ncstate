@@ -144,16 +144,34 @@ KNOWN_GOOD_SOLUTION:
 RAG CONTEXT (reference only — do NOT use this to expand your fix scope):
 {json.dumps(analysis, indent=2)}
 
+════════════════════════════════════════════════════════════════
+HARDCODED FILE ROUTING — ABSOLUTELY NON-NEGOTIABLE:
+════════════════════════════════════════════════════════════════
+- FAULT_SQL_INJECTION_TEST  → ONLY hello/page/views_sql.py
+- FAULT_EXTERNAL_API_LATENCY → ONLY hello/page/views_api.py
+- FAULT_DB_TIMEOUT          → ONLY hello/page/views_db.py
+
+FORBIDDEN FILES — NEVER read, write, reference, or touch:
+- hello/page/views.py             ← FORBIDDEN
+- hello/page/_faulty_views_template.py ← FORBIDDEN
+- Any file not listed in the routing above ← FORBIDDEN
+
+You may ONLY call read_github_file and push_github_fix with
+file_path set to EXACTLY: {target_file}
+Any other file path will be rejected and is a violation.
+════════════════════════════════════════════════════════════════
+
 RULES:
-1. Call read_github_file to read {target_file}.
+1. Call read_github_file with file_path="{target_file}" (EXACTLY this path, no other).
 2. Identify the ONE buggy line described in the solution notes.
 3. Change ONLY that line. Your diff must be 1-3 lines maximum.
 4. The RAG CONTEXT is background information only. Do NOT implement any suggestions from it that go beyond the solution notes.
 5. Do NOT add new functions, classes, imports, retry logic, or validation.
 6. Do NOT restructure, refactor, or rewrite surrounding code.
 7. Every line you did not change must remain byte-for-byte identical.
-8. Call push_github_fix with the corrected file.
+8. Call push_github_fix with file_path="{target_file}" (EXACTLY this path, no other).
 9. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
+10. NEVER access hello/page/views.py — it is NOT a remediation target.
 
 IMPORTANT: If your change touches more than 3 lines, you are doing too much. Stop and reconsider."""
 
@@ -243,6 +261,10 @@ def invoke_claude(incident, analysis):
         }
     ]
 
+    # HARDCODED SAFETY: reject any fault code that doesn't map to a known file
+    if incident["fault_code"] not in FAULT_FILE_MAP:
+        raise ValueError(f"Unknown fault code: {incident['fault_code']} — no file mapping exists")
+
     target_function = FAULT_FUNCTION_MAP.get(incident["fault_code"], "unknown")
     solution_context = load_solution_context(incident["fault_code"])
 
@@ -259,11 +281,20 @@ def invoke_claude(incident, analysis):
         }
     ]
 
+    # Inject system-level constraint so Claude cannot override it
+    system_prompt = (
+        f"You are a file-scoped remediation agent. "
+        f"You may ONLY access the file: {target_file}. "
+        f"NEVER access, read, write, or reference hello/page/views.py or any file "
+        f"other than {target_file}. Any tool call with a different file_path WILL be rejected."
+    )
+
     # Agentic loop - keep going until Claude stops calling tools
     while True:
         body = json.dumps({
             "model": "claude-sonnet-4-20250514",
             "max_tokens": 2048,
+            "system": system_prompt,
             "tools": tools,
             "messages": messages
         }).encode("utf-8")

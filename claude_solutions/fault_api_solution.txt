@@ -1,6 +1,8 @@
 Fault Code: FAULT_EXTERNAL_API_LATENCY
-Target File: hello/page/views_api.py
+Target File: hello/page/views_api.py   ← THIS IS THE ONLY FILE YOU MAY TOUCH
 Target Function: test_fault_external_api
+
+FORBIDDEN: Do NOT read or modify hello/page/views.py — it is OFF LIMITS.
 
 EXACT BUG (line 45):
         r = requests.get(f"{mock_api_base_url}/data", timeout=3)
@@ -10,4 +12,4 @@ EXACT FIX — replace that line with:
 
 That is the ONLY change. Do not add retry loops, backoff, circuit
 breakers, new imports, or any other code. Change timeout=3 to
-timeout=10 and nothing else.
+timeout=10 in hello/page/views_api.py and nothing else.
