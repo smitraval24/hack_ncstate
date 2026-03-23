@@ -58,35 +58,63 @@ def _is_access_denied_error(exc: Exception) -> bool:
     return error.get("Code") == "AccessDeniedException"
 
 
-def _safe_clear_fault_cooldown(fault_code: str) -> None:
-    """Safely attempt to clear SSM cooldown parameter with proper error handling."""
+def _safe_clear_fault_cooldown(fault_code: str) -> bool:
+    """Safely attempt to clear SSM cooldown parameter with proper error handling.
+    
+    Returns:
+        bool: True if parameter was successfully cleared or didn't exist, False if access denied
+    """
     import logging
     
     logger = logging.getLogger(__name__)
     
     try:
         import boto3
+        from botocore.exceptions import ClientError, BotoCoreError
         
         ssm = boto3.client("ssm")
         param_name = f"/cream/fault-cooldown/{fault_code}"
         ssm.delete_parameter(Name=param_name)
         logger.info("Successfully cleared cooldown for %s", fault_code)
+        return True
         
-    except Exception as exc:
+    except (ClientError, BotoCoreError) as exc:
         if _is_parameter_not_found_error(exc):
             # Parameter doesn't exist, which is fine - nothing to clear
             logger.debug("No cooldown parameter found for %s", fault_code)
+            return True
         elif _is_access_denied_error(exc):
-            # Log as warning but don't raise - this is an infrastructure issue
-            logger.warning(
-                "Could not clear cooldown for %s due to insufficient permissions. "
-                "This is an infrastructure configuration issue that requires "
-                "ssm:DeleteParameter permission to be added to the IAM role.",
+            # Log as info instead of warning to reduce noise - this is expected in some environments
+            logger.info(
+                "Skipping cooldown clear for %s: insufficient SSM permissions. "
+                "This is expected in restricted environments.",
                 fault_code
             )
+            return False
         else:
-            # Other errors should be logged but not raise to avoid breaking the app
+            # Other AWS errors should be logged but not raise to avoid breaking the app
             logger.warning("Could not clear cooldown for %s: %s", fault_code, exc)
+            return False
+    except Exception as exc:
+        # Non-AWS errors (import errors, etc.) should be logged
+        logger.warning("Unexpected error clearing cooldown for %s: %s", fault_code, exc)
+        return False
+
+
+def clear_fault_cooldown(fault_code: str) -> bool:
+    """Public interface for clearing fault cooldowns with proper error handling.
+    
+    This function should be used by all modules that need to clear fault cooldowns
+    to ensure consistent error handling and prevent AccessDeniedException from
+    breaking the application flow.
+    
+    Args:
+        fault_code: The fault code to clear cooldown for (e.g., 'FAULT_DB_TIMEOUT')
+        
+    Returns:
+        bool: True if successfully cleared or no action needed, False if access denied
+    """
+    return _safe_clear_fault_cooldown(fault_code)
 
 
 # Import fault route modules so their @page routes get registered.
