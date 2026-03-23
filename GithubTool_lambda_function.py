@@ -23,14 +23,31 @@ def normalize_file_path(file_path: str) -> str:
     return file_path.lstrip("/")
 
 
-def validate_file_path(file_path: str) -> str:
-    """Allow only the live remediation target file."""
+def validate_file_path(file_path: str, allowed_file_path: str | None = None) -> str:
+    """Allow only approved remediation files, optionally scoped to one exact file."""
     normalized = normalize_file_path(file_path)
+    allowed_normalized = (
+        normalize_file_path(allowed_file_path) if allowed_file_path else None
+    )
 
     if normalized in FORBIDDEN_CONTEXT_FILE_PATHS:
         raise ValueError(
             f"Access to {normalized} is forbidden for remediation context"
         )
+    if allowed_normalized:
+        if allowed_normalized in FORBIDDEN_CONTEXT_FILE_PATHS:
+            raise ValueError(
+                f"Configured allowed file {allowed_normalized} is forbidden"
+            )
+        if allowed_normalized not in ALLOWED_FILE_PATHS:
+            raise ValueError(
+                f"Configured allowed file {allowed_normalized} is not a valid remediation target"
+            )
+        if normalized != allowed_normalized:
+            raise ValueError(
+                f"This invocation may only access {allowed_normalized}; received {normalized}"
+            )
+        return normalized
     if normalized not in ALLOWED_FILE_PATHS:
         raise ValueError(
             f"Only {', '.join(sorted(ALLOWED_FILE_PATHS))} can be accessed by this tool"
@@ -77,10 +94,14 @@ def lambda_handler(event, context):
     try:
         params = {p["name"]: p["value"] for p in event.get("parameters", [])}
         fn_name = event["function"]
+        allowed_file_path = event.get("allowed_file_path")
 
         # ✅ READ file from GitHub
         if fn_name == "read_github_file":
-            file_path = validate_file_path(params["file_path"])
+            file_path = validate_file_path(
+                params["file_path"],
+                allowed_file_path=allowed_file_path,
+            )
             existing = gh_request("GET", f"/repos/{owner}/{repo}/contents/{file_path}?ref={branch}")
             content = base64.b64decode(existing["content"]).decode("utf-8")
             result = {"ok": True, "file_path": file_path, "content": content}
@@ -88,7 +109,10 @@ def lambda_handler(event, context):
         # ✅ WRITE file to GitHub
         elif fn_name == "push_github_fix":
             import re
-            file_path     = validate_file_path(params["file_path"])
+            file_path     = validate_file_path(
+                params["file_path"],
+                allowed_file_path=allowed_file_path,
+            )
             file_content  = params["file_content"]
             commit_message = params.get("commit_message", f"Update {file_path}")
 

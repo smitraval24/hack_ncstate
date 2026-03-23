@@ -173,9 +173,10 @@ RULES:
 3. Fix the bug in `{target_function}()` so it succeeds instead of failing.
 4. Keep all imports and the function signature intact. You may add new imports if needed.
 5. Preserve any verification-only safeguards already in the file so health probes do not create incidents.
-6. Do NOT read, inspect, or reference any other fault file or template file.
-7. Call push_github_fix with the full corrected file content.
-8. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
+6. If the incident, stack trace, or Backboard analysis mentions any other file, treat it as context only and still read/edit ONLY `{target_file}`.
+7. Do NOT read, inspect, or reference any other fault file or template file.
+8. Call push_github_fix with the full corrected file content.
+9. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
 
 Steps:
 1. Call read_github_file to read {target_file}
@@ -183,6 +184,44 @@ Steps:
 3. Update only the target file so `{target_function}()` returns success after remediation
 4. Call push_github_fix with the corrected file
 5. Report what you changed"""
+
+
+def validate_tool_input(tool_name: str, tool_input: dict, target_file: str) -> dict:
+    """Reject any tool call that tries to read or write outside the routed file."""
+    requested_path = tool_input.get("file_path")
+    if not requested_path:
+        raise ValueError(f"{tool_name} requires file_path")
+
+    normalized_path = requested_path.lstrip("/")
+    if normalized_path != target_file:
+        raise ValueError(
+            f"{tool_name} may only access {target_file}; received {normalized_path}"
+        )
+
+    sanitized_input = dict(tool_input)
+    sanitized_input["file_path"] = normalized_path
+    return sanitized_input
+
+
+def build_github_tool_event(
+    tool_name: str,
+    tool_input: dict,
+    target_file: str,
+    fault_code: str,
+) -> dict:
+    """Build a GitHub Lambda event with server-side file scope enforcement."""
+    sanitized_input = validate_tool_input(tool_name, tool_input, target_file)
+
+    return {
+        "actionGroup": "GitHubActions",
+        "function": tool_name,
+        "allowed_file_path": target_file,
+        "fault_code": fault_code,
+        "parameters": [
+            {"name": key, "value": value}
+            for key, value in sanitized_input.items()
+        ],
+    }
 
 # This function handles the invoke claude work for this file.
 def invoke_claude(incident, analysis):
@@ -309,14 +348,22 @@ def invoke_claude(incident, analysis):
 
             print(f"TOOL_CALL: {tool_name} -> {json.dumps(tool_input)}")
 
-            github_event = {
-                "actionGroup": "GitHubActions",
-                "function": tool_name,
-                "parameters": [
-                    {"name": k, "value": v}
-                    for k, v in tool_input.items()
-                ]
-            }
+            try:
+                github_event = build_github_tool_event(
+                    tool_name=tool_name,
+                    tool_input=tool_input,
+                    target_file=target_file,
+                    fault_code=incident["fault_code"],
+                )
+            except Exception as exc:
+                result_body = json.dumps({"ok": False, "error": str(exc)})
+                print(f"TOOL_RESULT: {result_body[:2000]}")
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": result_body
+                })
+                continue
 
             github_resp = lambda_client.invoke(
                 FunctionName=os.environ["GITHUB_LAMBDA_NAME"],

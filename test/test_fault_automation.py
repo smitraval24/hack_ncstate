@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import pytest
 
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 
@@ -100,6 +101,7 @@ def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
         {
             "actionGroup": "GitHubActions",
             "function": "push_github_fix",
+            "allowed_file_path": "hello/page/views_sql.py",
             "parameters": [
                 {"name": "file_path", "value": "hello/page/views_sql.py"},
                 {"name": "file_content", "value": unchanged_content},
@@ -170,6 +172,61 @@ def test_push_github_fix_rejects_unexpected_file():
     assert body["ok"] is False
     assert "only" in body["error"].lower()
     assert "views_" in body["error"].lower()
+
+
+def test_push_github_fix_rejects_other_allowed_file_when_invocation_is_scoped():
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "allowed_file_path": "hello/page/views_sql.py",
+            "parameters": [
+                {"name": "file_path", "value": "hello/page/views_db.py"},
+                {"name": "file_content", "value": "updated"},
+                {"name": "commit_message", "value": "Should fail"},
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is False
+    assert "may only access hello/page/views_sql.py" in body["error"]
+
+
+def test_build_github_tool_event_scopes_lambda_invocation_to_target_file():
+    event = fault_router_lambda.build_github_tool_event(
+        tool_name="read_github_file",
+        tool_input={"file_path": "/hello/page/views_sql.py"},
+        target_file="hello/page/views_sql.py",
+        fault_code="FAULT_SQL_INJECTION_TEST",
+    )
+
+    assert event["allowed_file_path"] == "hello/page/views_sql.py"
+    assert event["fault_code"] == "FAULT_SQL_INJECTION_TEST"
+    assert event["parameters"] == [
+        {"name": "file_path", "value": "hello/page/views_sql.py"}
+    ]
+
+
+def test_build_github_tool_event_rejects_off_target_fault_file():
+    with pytest.raises(ValueError, match="may only access hello/page/views_sql.py"):
+        fault_router_lambda.build_github_tool_event(
+            tool_name="push_github_fix",
+            tool_input={
+                "file_path": "hello/page/views_db.py",
+                "file_content": "updated",
+                "commit_message": "[FAULT:FAULT_SQL_INJECTION_TEST] wrong file",
+            },
+            target_file="hello/page/views_sql.py",
+            fault_code="FAULT_SQL_INJECTION_TEST",
+        )
 
 
 # This function runs the solution context load work used in this file.
