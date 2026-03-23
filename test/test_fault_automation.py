@@ -122,6 +122,174 @@ def test_push_github_fix_skips_commit_when_content_is_unchanged(monkeypatch):
     assert body["commit_sha"] is None
 
 
+def test_push_github_fix_allows_exact_approved_one_line_fix(monkeypatch):
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    existing_content = (
+        "def test_fault_run():\n"
+        "    try:\n"
+        '        db.session.execute(text("SELECT FROM"))\n'
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    requested_content = existing_content.replace(
+        '        db.session.execute(text("SELECT FROM"))\n',
+        '        db.session.execute(text("SELECT 1"))\n',
+    )
+    calls = []
+
+    def fake_gh_request(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {
+                "sha": "abc123",
+                "content": github_tool_lambda.base64.b64encode(
+                    existing_content.encode("utf-8")
+                ).decode("utf-8"),
+            }
+        if method == "PUT":
+            assert body["message"].startswith("[FAULT:FAULT_SQL_INJECTION_TEST]")
+            return {"commit": {"sha": "deadbeef"}}
+        raise AssertionError(f"Unexpected method: {method}")
+
+    monkeypatch.setattr(github_tool_lambda, "gh_request", fake_gh_request)
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "fault_code": "FAULT_SQL_INJECTION_TEST",
+            "allowed_file_path": "hello/page/views_sql.py",
+            "parameters": [
+                {"name": "file_path", "value": "hello/page/views_sql.py"},
+                {"name": "file_content", "value": requested_content},
+                {
+                    "name": "commit_message",
+                    "value": "[FAULT:FAULT_SQL_INJECTION_TEST] exact approved fix",
+                },
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is True
+    assert body["commit_sha"] == "deadbeef"
+    assert [call[0] for call in calls] == ["GET", "PUT"]
+
+
+def test_push_github_fix_rejects_unapproved_one_line_fix(monkeypatch):
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    existing_content = (
+        "def test_fault_run():\n"
+        "    try:\n"
+        '        db.session.execute(text("SELECT FROM"))\n'
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    requested_content = existing_content.replace(
+        '        db.session.execute(text("SELECT FROM"))\n',
+        '        db.session.execute(text("SELECT 1 as test_query"))\n',
+    )
+
+    def fake_gh_request(method, path, body=None):
+        assert method == "GET"
+        return {
+            "sha": "abc123",
+            "content": github_tool_lambda.base64.b64encode(
+                existing_content.encode("utf-8")
+            ).decode("utf-8"),
+        }
+
+    monkeypatch.setattr(github_tool_lambda, "gh_request", fake_gh_request)
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "fault_code": "FAULT_SQL_INJECTION_TEST",
+            "allowed_file_path": "hello/page/views_sql.py",
+            "parameters": [
+                {"name": "file_path", "value": "hello/page/views_sql.py"},
+                {"name": "file_content", "value": requested_content},
+                {
+                    "name": "commit_message",
+                    "value": "[FAULT:FAULT_SQL_INJECTION_TEST] wrong replacement",
+                },
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is False
+    assert "approved one-line fix" in body["error"]
+
+
+def test_push_github_fix_rejects_large_rewrite_even_on_allowed_file(monkeypatch):
+    os.environ["GITHUB_OWNER"] = "example"
+    os.environ["GITHUB_REPO"] = "repo"
+
+    existing_content = (
+        "def test_fault_run():\n"
+        "    try:\n"
+        '        db.session.execute(text("SELECT FROM"))\n'
+        "    except Exception:\n"
+        "        pass\n"
+    )
+    requested_content = (
+        "import sqlite3\n"
+        "def test_fault_run():\n"
+        "    conn = sqlite3.connect(':memory:')\n"
+        "    return conn.execute('SELECT 1').fetchall()\n"
+    )
+
+    def fake_gh_request(method, path, body=None):
+        assert method == "GET"
+        return {
+            "sha": "abc123",
+            "content": github_tool_lambda.base64.b64encode(
+                existing_content.encode("utf-8")
+            ).decode("utf-8"),
+        }
+
+    monkeypatch.setattr(github_tool_lambda, "gh_request", fake_gh_request)
+
+    response = github_tool_lambda.lambda_handler(
+        {
+            "actionGroup": "GitHubActions",
+            "function": "push_github_fix",
+            "fault_code": "FAULT_SQL_INJECTION_TEST",
+            "allowed_file_path": "hello/page/views_sql.py",
+            "parameters": [
+                {"name": "file_path", "value": "hello/page/views_sql.py"},
+                {"name": "file_content", "value": requested_content},
+                {
+                    "name": "commit_message",
+                    "value": "[FAULT:FAULT_SQL_INJECTION_TEST] big rewrite",
+                },
+            ],
+        },
+        None,
+    )
+
+    body = json.loads(
+        response["response"]["functionResponse"]["responseBody"]["TEXT"]["body"]
+    )
+
+    assert body["ok"] is False
+    assert "exactly one contiguous line" in body["error"].lower()
+
+
 # This function runs the read github file rejects fault template files work used in this file.
 def test_read_github_file_rejects_fault_template_file():
     os.environ["GITHUB_OWNER"] = "example"

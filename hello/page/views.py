@@ -4,8 +4,7 @@ import os
 import sys
 from importlib.metadata import version
 
-from flask import Blueprint, render_template, request
-import re
+from flask import Blueprint, render_template
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -14,46 +13,6 @@ page = Blueprint("page", __name__, template_folder="templates")
 
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 BUILD_SHA = os.environ.get("BUILD_SHA", "").strip()
-
-
-def sanitize_sql_input(input_string):
-    """Sanitize input to prevent SQL injection attacks."""
-    if not isinstance(input_string, str):
-        return str(input_string)
-    
-    # Remove dangerous SQL keywords and characters
-    dangerous_patterns = [
-        r'(\b(DROP|DELETE|INSERT|UPDATE|CREATE|ALTER|EXEC|EXECUTE|UNION|SELECT)\b)',
-        r'(--|#|/\*|\*/)',
-        r'(\;|\')|(\")',
-        r'(\bOR\b|\bAND\b).*(\=|\>|\<)',
-        r'(\bxp_cmdshell\b|\bsp_executesql\b)',
-    ]
-    
-    sanitized = input_string
-    for pattern in dangerous_patterns:
-        sanitized = re.sub(pattern, '', sanitized, flags=re.IGNORECASE)
-    
-    # Remove extra whitespace
-    sanitized = ' '.join(sanitized.split())
-    
-    return sanitized
-
-
-def validate_input_parameters():
-    """Validate and sanitize all request parameters to prevent SQL injection."""
-    if request.method in ['POST', 'PUT', 'PATCH']:
-        # Sanitize form data
-        sanitized_form = {}
-        for key, value in request.form.items():
-            sanitized_form[key] = sanitize_sql_input(value)
-        request.form = sanitized_form
-    
-    # Sanitize query parameters
-    sanitized_args = {}
-    for key, value in request.args.items():
-        sanitized_args[key] = sanitize_sql_input(value)
-    request.args = sanitized_args
 
 
 # This function handles the home work for this file.
@@ -83,12 +42,6 @@ def _render_fault(result=None):
 @page.get("/test-fault")
 def test_fault():
     return _render_fault()
-
-
-@page.before_request
-def before_request():
-    """Execute security checks before each request to prevent SQL injection."""
-    validate_input_parameters()
 
 
 def _is_parameter_not_found_error(exc: Exception) -> bool:
