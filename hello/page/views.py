@@ -44,6 +44,51 @@ def test_fault():
     return _render_fault()
 
 
+def _is_parameter_not_found_error(exc: Exception) -> bool:
+    """Check if the exception is an SSM ParameterNotFound error."""
+    response = getattr(exc, "response", {}) or {}
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    return error.get("Code") == "ParameterNotFound"
+
+
+def _is_access_denied_error(exc: Exception) -> bool:
+    """Check if the exception is an SSM AccessDenied error."""
+    response = getattr(exc, "response", {}) or {}
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    return error.get("Code") == "AccessDeniedException"
+
+
+def _safe_clear_fault_cooldown(fault_code: str) -> None:
+    """Safely attempt to clear SSM cooldown parameter with proper error handling."""
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        import boto3
+        
+        ssm = boto3.client("ssm")
+        param_name = f"/cream/fault-cooldown/{fault_code}"
+        ssm.delete_parameter(Name=param_name)
+        logger.info("Successfully cleared cooldown for %s", fault_code)
+        
+    except Exception as exc:
+        if _is_parameter_not_found_error(exc):
+            # Parameter doesn't exist, which is fine - nothing to clear
+            logger.debug("No cooldown parameter found for %s", fault_code)
+        elif _is_access_denied_error(exc):
+            # Log as warning but don't raise - this is an infrastructure issue
+            logger.warning(
+                "Could not clear cooldown for %s due to insufficient permissions. "
+                "This is an infrastructure configuration issue that requires "
+                "ssm:DeleteParameter permission to be added to the IAM role.",
+                fault_code
+            )
+        else:
+            # Other errors should be logged but not raise to avoid breaking the app
+            logger.warning("Could not clear cooldown for %s: %s", fault_code, exc)
+
+
 # Import fault route modules so their @page routes get registered.
 # Each views_*.py file is the ONLY file the self-healing loop edits
 # for its respective fault code.
