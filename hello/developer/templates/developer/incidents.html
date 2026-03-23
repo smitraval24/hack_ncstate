@@ -653,7 +653,8 @@
             <span class="mini-pill" id="hero-impacted-count">
               {{ dashboard_aggregates.impacted_requests_total }} impacted requests
             </span>
-            <button onclick="resetIncidents()" class="hero-reset">Reset All</button>
+            <button id="reset-btn" onclick="resetIncidents()" class="hero-reset">Reset All</button>
+            <button id="revive-btn" onclick="reviveSelfHealing()" class="hero-reset" style="display:none; background:linear-gradient(135deg,#11d2bd,#2977ff);">Revive Self Healing Loop</button>
           </div>
         </div>
 
@@ -1205,18 +1206,69 @@
     setTimeout(updateDashboard, 0);
     setInterval(updateDashboard, REFRESH_INTERVAL);
 
+    const resetBtn = document.getElementById('reset-btn');
+    const reviveBtn = document.getElementById('revive-btn');
+
+    // On page load, check if self-healing is already paused
+    fetch('/developer/incidents/healing-status')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.paused) {
+          resetBtn.style.display = 'none';
+          reviveBtn.style.display = '';
+        }
+      })
+      .catch(() => {});
+
     function resetIncidents() {
-      if (!confirm('Reset ALL incidents and restore ALL faults to their original faulty code?\nSelf-healing will stay paused until you click "Arm Self-Healing".')) return;
+      if (!confirm('Reset ALL incidents and restore ALL faults to their original faulty code?\nSelf-healing will stay paused until you click "Revive Self Healing Loop".')) return;
+      resetBtn.disabled = true;
+      resetBtn.textContent = 'Resetting...';
       fetch('/developer/incidents/reset', { method: 'POST' })
         .then((res) => res.json())
         .then((data) => {
           if (data.success) {
-            window.location.reload();
+            // Pipeline kicked off — swap to Revive button
+            resetBtn.style.display = 'none';
+            reviveBtn.style.display = '';
+            updateDashboard();
           } else {
             alert('Reset failed: ' + (data.error || 'Unknown error'));
+            resetBtn.disabled = false;
+            resetBtn.textContent = 'Reset All';
           }
         })
-        .catch((err) => alert('Reset failed: ' + err.message));
+        .catch((err) => {
+          alert('Reset failed: ' + err.message);
+          resetBtn.disabled = false;
+          resetBtn.textContent = 'Reset All';
+        });
+    }
+
+    function reviveSelfHealing() {
+      if (!confirm('Revive the self-healing loop? It will start catching and fixing injected faults again.')) return;
+      reviveBtn.disabled = true;
+      reviveBtn.textContent = 'Reviving...';
+      fetch('/developer/incidents/revive-healing', { method: 'POST' })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success) {
+            reviveBtn.style.display = 'none';
+            resetBtn.style.display = '';
+            resetBtn.disabled = false;
+            resetBtn.textContent = 'Reset All';
+            updateDashboard();
+          } else {
+            alert('Revive failed: ' + (data.error || 'Unknown error'));
+            reviveBtn.disabled = false;
+            reviveBtn.textContent = 'Revive Self Healing Loop';
+          }
+        })
+        .catch((err) => {
+          alert('Revive failed: ' + err.message);
+          reviveBtn.disabled = false;
+          reviveBtn.textContent = 'Revive Self Healing Loop';
+        });
     }
 
   </script>

@@ -28,22 +28,14 @@ def test_fault_db_timeout():
     start = time.time()
 
     # INTENTIONAL BUG: minimum 5s delay to simulate a slow DB timeout.
-    # With a real DB, pg_sleep(10) + statement_timeout='12000ms' takes ~10s.
+    # With a real DB, pg_sleep(10) + statement_timeout='5500ms' takes ~5.5s.
     # If the DB is unreachable the connection error is instant, so we
     # enforce a floor so the response always visibly hangs.
     min_delay = 5.0
 
     try:
-        # Fix: Increased timeout from 5500ms to 12000ms (12 seconds) to accommodate
-        # the 10-second pg_sleep(10) operation. This prevents timeout errors while
-        # maintaining fault injection testing capability.
-        db.session.execute(text("SET LOCAL statement_timeout = '12000ms';"))
+        db.session.execute(text("SET LOCAL statement_timeout = '5500ms';"))
         db.session.execute(text("SELECT pg_sleep(10);"))
-        
-        # Commit the transaction after successful execution to ensure proper
-        # transaction handling and prevent any potential connection issues
-        db.session.commit()
-        
         latency = time.time() - start
         result = {
             "status": "ok",

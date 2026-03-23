@@ -53,7 +53,9 @@ FAULT_ROUTE_MAP = {
 
 AUTO_HEAL_ACTION_TYPES = {"auto_fix_pushed"}
 DEMO_RESET_TIMESTAMP_PARAM = "/cream/demo-reset-timestamp"
+SELF_HEALING_PAUSED_PARAM = "/cream/self-healing-paused"
 _demo_reset_timestamp: datetime | None = None
+_self_healing_paused: bool | None = None
 FAULT_VERIFICATION_HEADER = "X-Fault-Verification"
 
 
@@ -877,6 +879,66 @@ def _clear_fault_cooldowns(fault_codes: list[str]) -> dict[str, list[str] | dict
     return {"cleared": cleared, "errors": errors}
 
 
+# ---------------------------------------------------------------------------
+# Self-healing pause / revive helpers
+# ---------------------------------------------------------------------------
+
+def _pause_self_healing() -> bool:
+    """Set the SSM flag that tells the Lambda to stop pushing fixes."""
+    global _self_healing_paused
+    try:
+        import boto3
+        boto3.client("ssm").put_parameter(
+            Name=SELF_HEALING_PAUSED_PARAM,
+            Value="true",
+            Type="String",
+            Overwrite=True,
+        )
+        _self_healing_paused = True
+        logger.info("Self-healing loop PAUSED via SSM")
+        return True
+    except Exception as exc:
+        logger.warning("Could not set self-healing pause flag: %s", exc)
+        _self_healing_paused = True  # still pause in-memory as fallback
+        return False
+
+
+def _revive_self_healing() -> bool:
+    """Remove the SSM flag so the Lambda resumes pushing fixes."""
+    global _self_healing_paused
+    try:
+        import boto3
+        boto3.client("ssm").delete_parameter(Name=SELF_HEALING_PAUSED_PARAM)
+        _self_healing_paused = False
+        logger.info("Self-healing loop REVIVED via SSM")
+        return True
+    except Exception as exc:
+        if _is_parameter_not_found(exc):
+            _self_healing_paused = False
+            return True
+        logger.warning("Could not clear self-healing pause flag: %s", exc)
+        _self_healing_paused = False  # still unpause in-memory
+        return False
+
+
+def is_self_healing_paused() -> bool:
+    """Return True if the self-healing loop is currently paused."""
+    global _self_healing_paused
+    if _self_healing_paused is not None:
+        return _self_healing_paused
+    try:
+        import boto3
+        boto3.client("ssm").get_parameter(Name=SELF_HEALING_PAUSED_PARAM)
+        _self_healing_paused = True
+        return True
+    except Exception as exc:
+        if _is_parameter_not_found(exc):
+            _self_healing_paused = False
+            return False
+        logger.warning("Could not read self-healing pause flag: %s", exc)
+        return False
+
+
 def _filter_incidents_after_demo_reset(incidents: list[dict]) -> list[dict]:
     """Hide incidents that predate the latest Reset All action."""
     cutoff = _get_demo_reset_timestamp()
@@ -1270,12 +1332,15 @@ def store_in_cache(incident_id):
 # This function handles the reset incidents work for this file.
 @developer.post("/developer/incidents/reset")
 def reset_incidents():
-    """Clear demo state and restore ALL faults to their original faulty code."""
+    """Clear demo state, restore ALL faults, and pause self-healing."""
     try:
         count = reset_live_incidents()
         reset_at = datetime.now()
         _record_demo_reset(reset_at)
         cooldown_reset = _clear_fault_cooldowns(sorted(FAULT_FILE_PATH_MAP.keys()))
+
+        # Pause self-healing so the Lambda does not fix the restored faults
+        _pause_self_healing()
 
         # Always restore ALL known fault handlers to their faulty template
         # code so the full self-healing demo cycle can be re-tested.
@@ -1295,12 +1360,33 @@ def reset_incidents():
             "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
             "forced_ecs_deploy": code_reset_result.get("forced_ecs_deploy", False),
+            "self_healing_paused": True,
         })
     except Exception as e:
         logger.exception("Failed to reset incidents")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@developer.post("/developer/incidents/revive-healing")
+def revive_healing():
+    """Re-enable the self-healing loop after a Reset All."""
+    try:
+        ssm_ok = _revive_self_healing()
+        return jsonify({
+            "success": True,
+            "self_healing_paused": False,
+            "ssm_cleared": ssm_ok,
+        })
+    except Exception as e:
+        logger.exception("Failed to revive self-healing")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@developer.get("/developer/incidents/healing-status")
+def healing_status():
+    """Return whether self-healing is currently paused."""
+    paused = is_self_healing_paused()
+    return jsonify({"paused": paused})
 
 
 def _reset_faulty_code(fault_codes: list[str]) -> dict:
@@ -1379,6 +1465,10 @@ def pipeline_pending():
     Updates matching live incidents to 'in_progress' and stores the RAG
     analysis and Claude output so the dashboard shows remediation is underway.
     """
+    if is_self_healing_paused():
+        logger.info("pipeline_pending blocked — self-healing is paused")
+        return jsonify({"success": False, "error": "self-healing is paused", "paused": True}), 503
+
     data = request.get_json(force=True, silent=True) or {}
     fault_code = data.get("fault_code", "")
     route = data.get("route") or _default_route_for_fault_code(fault_code)
@@ -1459,6 +1549,10 @@ def pipeline_callback():
             "deploy_error": ""  // only on failure
         }
     """
+    if is_self_healing_paused():
+        logger.info("pipeline_callback blocked — self-healing is paused")
+        return jsonify({"success": False, "error": "self-healing is paused", "paused": True}), 503
+
     data = request.get_json(force=True, silent=True) or {}
     fault_codes = data.get("fault_codes", [])
     pipeline_status = data.get("status", "")
