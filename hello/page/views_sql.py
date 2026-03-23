@@ -30,7 +30,7 @@ def test_fault_run():
 
     try:
         # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
-        db.session.execute(text("SELECT 1"))
+        db.session.execute(text("SELECT FROM"))
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
