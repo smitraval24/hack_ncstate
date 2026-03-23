@@ -2,12 +2,12 @@ Fault Code: FAULT_DB_TIMEOUT
 Target File: hello/page/views_db.py
 Target Function: test_fault_db_timeout
 
-Bug Pattern: The function executes a sleep query that takes longer
-than the statement timeout, so PostgreSQL always cancels it.
+EXACT BUG (line 39):
+        db.session.execute(text("SELECT pg_sleep(10);"))
 
-What "fixed" looks like: The sleep duration fits within the statement
-timeout so the query completes successfully. The fix is changing the
-sleep duration only — nothing else in the function needs to change.
+EXACT FIX — replace that line with:
+        db.session.execute(text("SELECT pg_sleep(1);"))
 
-Scope: ONE line change. Do not change statement_timeout, remove
-min_delay, or restructure error handling.
+That is the ONLY change. Do not modify statement_timeout, add retry
+logic, change error handling, or add any other code. Change
+pg_sleep(10) to pg_sleep(1) and nothing else.

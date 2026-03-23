@@ -2,12 +2,12 @@ Fault Code: FAULT_EXTERNAL_API_LATENCY
 Target File: hello/page/views_api.py
 Target Function: test_fault_external_api
 
-Bug Pattern: The HTTP request timeout is too short for the upstream
-API's expected response time, causing frequent timeout exceptions.
+EXACT BUG (line 45):
+        r = requests.get(f"{mock_api_base_url}/data", timeout=3)
 
-What "fixed" looks like: The timeout value is large enough that the
-upstream API can respond. The fix is changing the timeout value only —
-nothing else in the function needs to change.
+EXACT FIX — replace that line with:
+        r = requests.get(f"{mock_api_base_url}/data", timeout=10)
 
-Scope: ONE line change. Do not add retry loops, backoff, circuit
-breakers, or new imports.
+That is the ONLY change. Do not add retry loops, backoff, circuit
+breakers, new imports, or any other code. Change timeout=3 to
+timeout=10 and nothing else.

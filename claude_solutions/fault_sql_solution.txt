@@ -2,13 +2,12 @@ Fault Code: FAULT_SQL_INJECTION_TEST
 Target File: hello/page/views_sql.py
 Target Function: test_fault_run
 
-Bug Pattern: The function executes a malformed SQL statement that will
-always fail with a syntax error. The SQL string is missing required
-clauses.
+EXACT BUG (line 30):
+        db.session.execute(text("SELECT FROM"))
 
-What "fixed" looks like: The SQL statement is syntactically valid and
-executes successfully. The fix is changing the SQL string only —
-nothing else in the function needs to change.
+EXACT FIX — replace that line with:
+        db.session.execute(text("SELECT 1"))
 
-Scope: ONE line change. Do not add parameter binding, form parsing,
-input validation, or new variables.
+That is the ONLY change. Do not add imports, validation, sanitization,
+middleware, helper functions, or any other code. Change this one string
+and nothing else.
