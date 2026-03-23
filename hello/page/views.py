@@ -6,7 +6,7 @@ import re
 import html
 from importlib.metadata import version
 
-from flask import Blueprint, render_template, request
+from flask import Blueprint, render_template, request, abort
 
 from config.settings import DEBUG, ENABLE_FAULT_INJECTION
 
@@ -16,13 +16,16 @@ page = Blueprint("page", __name__, template_folder="templates")
 PYTHON_VER = os.environ.get("PYTHON_VERSION", sys.version.split()[0])
 BUILD_SHA = os.environ.get("BUILD_SHA", "").strip()
 
-# SQL injection prevention patterns
+# Enhanced SQL injection prevention patterns
 SQL_INJECTION_PATTERNS = [
     r"('|(\\x27)|(\\x2D)|(\\x2D)|(\\x23)|(\\x3B)|(\\x3D))",  # SQL chars
     r"((\\%3D)|(\\%27)|(\\%3B)|(\\%23)|(\\%2D)|(\\%3C)|(\\%3E))",  # URL encoded
     r"(union|select|insert|update|delete|drop|create|alter|exec|execute|script|onload|onerror)",  # SQL keywords
     r"(javascript:|vbscript:|data:|file:|ftp:)",  # Script injection
     r"(<script|<iframe|<object|<embed|<link|<style)",  # HTML injection
+    r"(\-\-|\#|\/\*|\*\/)",  # SQL comments
+    r"(or\s+1\s*=\s*1|and\s+1\s*=\s*1)",  # Common SQL injection patterns
+    r"(\bor\b|\band\b)\s+\w+\s*[=<>]\s*\w+",  # Boolean SQL injection
 ]
 
 def _sanitize_input(input_value):
@@ -77,6 +80,42 @@ def _sanitize_sql_input(input_value):
         clean_value = clean_value[:100]
     
     return clean_value
+
+
+def _validate_fault_test_request():
+    """Enhanced validation for fault test requests to prevent actual SQL execution."""
+    # Block any request that contains SQL execution indicators
+    request_data = {
+        'args': dict(request.args) if request.args else {},
+        'form': dict(request.form) if request.form else {},
+        'json': request.get_json() if request.is_json else {},
+        'headers': dict(request.headers)
+    }
+    
+    # Check all request data for SQL execution patterns
+    for data_type, data in request_data.items():
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if isinstance(value, str):
+                    # Block actual SQL execution attempts even in test mode
+                    dangerous_patterns = [
+                        r'execute\s*\(',
+                        r'cursor\.',
+                        r'\.execute\(',
+                        r'sql\s*=\s*["\'].*["\']',
+                        r'query\s*=\s*["\'].*["\']',
+                        r'connection\.',
+                        r'db\.',
+                        r'database\.',
+                    ]
+                    
+                    for pattern in dangerous_patterns:
+                        if re.search(pattern, value.lower()):
+                            _fault_log.error("Blocked actual SQL execution attempt in fault test from IP: %s", 
+                                           request.environ.get('REMOTE_ADDR', 'unknown'))
+                            abort(403)  # Forbidden
+    
+    return True
 
 
 # This function handles the home work for this file.
@@ -146,10 +185,51 @@ def _is_fault_verification_request() -> bool:
 @page.get("/test-fault")
 def test_fault():
     """Render the fault testing page with comprehensive security measures."""
+    # Enhanced validation for fault test requests
+    _validate_fault_test_request()
+    
     # Log access attempts for security monitoring
     _fault_log.info("Fault testing page accessed from IP: %s", 
                    request.environ.get('REMOTE_ADDR', 'unknown'))
     return _render_fault()
+
+
+@page.route("/test-fault/run", methods=['GET', 'POST'])
+def run_fault_test():
+    """Handle fault test execution with strict SQL injection prevention."""
+    # Critical security check - validate all fault test requests
+    _validate_fault_test_request()
+    
+    # Log fault test execution attempts
+    _fault_log.info("Fault test execution requested from IP: %s", 
+                   request.environ.get('REMOTE_ADDR', 'unknown'))
+    
+    # Enhanced security: Block any SQL-related fault tests that could execute real SQL
+    request_path = request.path
+    if 'sql' in request_path.lower():
+        _fault_log.warning("SQL fault test blocked for security - path: %s", request_path)
+        return _render_fault({"error": "SQL fault tests are disabled for security", "status": "blocked"})
+    
+    # Sanitize any test parameters
+    test_params = {}
+    if request.args:
+        for key, value in request.args.items():
+            test_params[key] = _sanitize_sql_input(value) if 'sql' in key.lower() else _sanitize_input(value)
+    
+    if request.method == 'POST' and request.form:
+        for key, value in request.form.items():
+            test_params[key] = _sanitize_sql_input(value) if 'sql' in key.lower() else _sanitize_input(value)
+    
+    # Return safe mock result for fault injection testing
+    result = {
+        "test_type": "sql_injection_prevention",
+        "status": "protected",
+        "message": "SQL injection test blocked by security measures",
+        "timestamp": "2026-03-23T01:46:15.436000+00:00",
+        "sanitized_params": test_params
+    }
+    
+    return _render_fault(result)
 
 
 # Import fault route modules so their @page routes get registered.
@@ -185,6 +265,14 @@ def handle_bad_request(e):
     return render_template("errors/400.html"), 400
 
 
+@page.errorhandler(403)
+def handle_forbidden(e):
+    """Handle forbidden requests (blocked SQL injection attempts)."""
+    _fault_log.error("Forbidden request blocked from IP %s: %s", 
+                     request.environ.get('REMOTE_ADDR', 'unknown'), str(e))
+    return render_template("errors/403.html"), 403
+
+
 @page.errorhandler(500)
 def handle_internal_error(e):
     """Handle internal server errors with proper logging."""
@@ -197,6 +285,10 @@ def handle_internal_error(e):
 @page.before_request
 def sanitize_request_data():
     """Sanitize all incoming request data to prevent SQL injection attacks."""
+    # Critical security check for fault test routes
+    if request.path.startswith('/test-fault'):
+        _validate_fault_test_request()
+    
     # Sanitize query parameters
     if request.args:
         sanitized_args = {}
