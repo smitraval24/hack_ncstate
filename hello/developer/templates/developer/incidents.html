@@ -653,9 +653,7 @@
             <span class="mini-pill" id="hero-impacted-count">
               {{ dashboard_aggregates.impacted_requests_total }} impacted requests
             </span>
-            {% if data_source in ('live', 'live+cloudwatch') %}
-              <button onclick="resetIncidents()" class="hero-reset">Reset All</button>
-            {% endif %}
+            <button onclick="resetIncidents()" class="hero-reset">Reset All</button>
           </div>
         </div>
 
