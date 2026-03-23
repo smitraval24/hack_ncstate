@@ -49,6 +49,76 @@ def gh_request(method: str, path: str, token: str, body=None):
         return json.loads(r.read().decode("utf-8"))
 
 
+def create_atomic_reset_commit(
+    owner: str,
+    repo: str,
+    branch: str,
+    token: str,
+    file_updates: dict[str, str],
+) -> str:
+    """Create one Git commit that restores every changed fault file together."""
+    ref = gh_request(
+        "GET",
+        f"/repos/{owner}/{repo}/git/ref/heads/{branch}",
+        token,
+    )
+    base_commit_sha = ref["object"]["sha"]
+    base_commit = gh_request(
+        "GET",
+        f"/repos/{owner}/{repo}/git/commits/{base_commit_sha}",
+        token,
+    )
+    base_tree_sha = base_commit["tree"]["sha"]
+
+    tree_entries = []
+    for target_path, content in file_updates.items():
+        blob = gh_request(
+            "POST",
+            f"/repos/{owner}/{repo}/git/blobs",
+            token,
+            {
+                "content": content,
+                "encoding": "utf-8",
+            },
+        )
+        tree_entries.append({
+            "path": target_path,
+            "mode": "100644",
+            "type": "blob",
+            "sha": blob["sha"],
+        })
+
+    new_tree = gh_request(
+        "POST",
+        f"/repos/{owner}/{repo}/git/trees",
+        token,
+        {
+            "base_tree": base_tree_sha,
+            "tree": tree_entries,
+        },
+    )
+    new_commit = gh_request(
+        "POST",
+        f"/repos/{owner}/{repo}/git/commits",
+        token,
+        {
+            "message": "[RESET] Restore all faulty handlers for self-healing loop testing",
+            "tree": new_tree["sha"],
+            "parents": [base_commit_sha],
+        },
+    )
+    gh_request(
+        "PATCH",
+        f"/repos/{owner}/{repo}/git/refs/heads/{branch}",
+        token,
+        {
+            "sha": new_commit["sha"],
+            "force": False,
+        },
+    )
+    return new_commit["sha"]
+
+
 def lambda_handler(event, context):
     print(json.dumps(event))
 
@@ -59,6 +129,9 @@ def lambda_handler(event, context):
 
     results = {}
     any_committed = False
+    commit_sha = None
+    pending_writes = {}
+    top_level_error = None
 
     for source_path, target_path in FAULT_RESET_MAP.items():
         try:
@@ -88,30 +161,16 @@ def lambda_handler(event, context):
                 }
                 continue
 
-            # Push the fault content as the target views file
-            content_b64 = base64.b64encode(fault_content.encode("utf-8")).decode("utf-8")
-            commit_message = f"[RESET] Restore faulty handler from {source_path}"
-
-            updated = gh_request(
-                "PUT",
-                f"/repos/{owner}/{repo}/contents/{target_path}",
-                token,
-                {
-                    "message": commit_message,
-                    "content": content_b64,
-                    "sha": target_sha,
-                    "branch": branch,
-                },
-            )
-
-            commit_sha = updated.get("commit", {}).get("sha")
             results[target_path] = {
                 "ok": True,
                 "no_change": False,
                 "source": source_path,
-                "commit_sha": commit_sha,
             }
-            any_committed = True
+            pending_writes[target_path] = {
+                "source": source_path,
+                "content": fault_content,
+                "target_sha": target_sha,
+            }
 
         except Exception as e:
             results[target_path] = {
@@ -120,10 +179,40 @@ def lambda_handler(event, context):
                 "error": str(e),
             }
 
+    if pending_writes and all(r.get("ok", False) for r in results.values()):
+        try:
+            commit_sha = create_atomic_reset_commit(
+                owner=owner,
+                repo=repo,
+                branch=branch,
+                token=token,
+                file_updates={
+                    target_path: info["content"]
+                    for target_path, info in pending_writes.items()
+                },
+            )
+            any_committed = True
+            for target_path, info in pending_writes.items():
+                results[target_path] = {
+                    "ok": True,
+                    "no_change": False,
+                    "source": info["source"],
+                    "commit_sha": commit_sha,
+                }
+        except Exception as e:
+            top_level_error = str(e)
+            for target_path, info in pending_writes.items():
+                results[target_path] = {
+                    "ok": False,
+                    "no_change": False,
+                    "source": info["source"],
+                    "error": top_level_error,
+                }
+
     # If no files changed, force ECS redeployment so the service
     # picks up whatever is already in the latest image.
     forced_ecs_deploy = False
-    if not any_committed:
+    if not any_committed and not pending_writes and all(r.get("ok", False) for r in results.values()):
         try:
             ecs = boto3.client("ecs")
             ecs.update_service(
@@ -136,8 +225,12 @@ def lambda_handler(event, context):
             print(f"Failed to force ECS redeployment: {e}")
 
     return {
-        "success": all(r.get("ok", False) for r in results.values()),
+        "success": all(r.get("ok", False) for r in results.values()) and (
+            not pending_writes or any_committed
+        ),
         "results": results,
         "any_committed": any_committed,
         "forced_ecs_deploy": forced_ecs_deploy,
+        "commit_sha": commit_sha,
+        "error": top_level_error,
     }

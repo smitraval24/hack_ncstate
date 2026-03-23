@@ -405,6 +405,12 @@ def invoke_claude(incident, analysis):
         lambda_client = boto3.client("lambda")
 
         for block in tool_use_blocks:
+            if _is_self_healing_paused():
+                return (
+                    f"Skipped remediation for {incident['fault_code']} because "
+                    "self-healing was paused during execution."
+                )
+
             tool_name = block["name"]
             tool_input = block.get("input", {})
             tool_use_id = block["id"]
@@ -542,6 +548,10 @@ def lambda_handler(event, context):
             print(f"SKIP cooldown active for {inc['fault_code']} (within {FAULT_COOLDOWN_SECONDS}s)")
             continue
 
+        if _is_self_healing_paused():
+            print(f"SKIP: self-healing loop was paused before analysis for {inc['fault_code']}")
+            continue
+
         try:
             # 1️⃣ Send incident to Backboard thread → get RAG analysis
             analysis = backboard_message(
@@ -555,9 +565,17 @@ def lambda_handler(event, context):
             )
             print("BACKBOARD_ANALYSIS:", json.dumps(analysis)[:4000])
 
+            if _is_self_healing_paused():
+                print(f"SKIP: self-healing loop was paused before remediation for {inc['fault_code']}")
+                continue
+
             # 2️⃣ Call Claude API with GitHub tools
             agent_output = invoke_claude(inc, analysis)
             print("CLAUDE_OUTPUT:", agent_output[:4000])
+
+            if agent_output.startswith("Skipped remediation for "):
+                print(f"SKIP: {agent_output}")
+                continue
 
             # 3️⃣ Record pending remediation on dashboard so the pipeline
             #    callback (GitHub Actions) can resolve it after deploy.

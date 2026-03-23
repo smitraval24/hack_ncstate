@@ -1217,6 +1217,36 @@
     const resetBtn = document.getElementById('reset-btn');
     const reviveBtn = document.getElementById('revive-btn');
 
+    function formatResetResults(perFileResults) {
+      return Object.entries(perFileResults || {})
+        .map(([filePath, result]) => {
+          if (result.ok) {
+            const status = result.no_change ? 'already faulty' : 'restored';
+            const commit = result.commit_sha ? ` (${result.commit_sha.slice(0, 7)})` : '';
+            return `${filePath}: ${status}${commit}`;
+          }
+          return `${filePath}: ${result.error || 'failed'}`;
+        })
+        .join('\n');
+    }
+
+    function buildResetFailureMessage(data) {
+      const lines = [data.error || 'Reset failed.'];
+      const codeResetResults = data.code_reset && data.code_reset.per_file_results
+        ? data.code_reset.per_file_results
+        : null;
+      const resultDetails = formatResetResults(data.per_file_results || codeResetResults);
+      if (resultDetails) {
+        lines.push('');
+        lines.push(resultDetails);
+      }
+      if (data.self_healing_paused) {
+        lines.push('');
+        lines.push('Self-healing is still paused.');
+      }
+      return lines.join('\n');
+    }
+
     // On page load, check if self-healing is already paused
     fetch('/developer/incidents/healing-status')
       .then((res) => res.json())
@@ -1241,9 +1271,15 @@
             reviveBtn.style.display = '';
             updateDashboard();
           } else {
-            alert('Reset failed: ' + (data.error || 'Unknown error'));
+            alert(buildResetFailureMessage(data));
+            resetBtn.style.display = '';
             resetBtn.disabled = false;
             resetBtn.textContent = 'Reset All';
+            if (data.self_healing_paused) {
+              reviveBtn.style.display = '';
+              reviveBtn.disabled = false;
+              reviveBtn.textContent = 'Revive Self Healing Loop';
+            }
           }
         })
         .catch((err) => {

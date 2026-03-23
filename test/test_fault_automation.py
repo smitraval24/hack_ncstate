@@ -337,3 +337,58 @@ def test_lambda_handler_skips_events_logged_before_latest_demo_reset(monkeypatch
     invoke_claude.assert_called_once()
     assert backboard_message.call_count >= 1
     assert invoke_claude.call_args.args[0]["event_id"] == "evt-new"
+
+
+def test_lambda_handler_stops_before_remediation_when_reset_pauses_mid_run(monkeypatch):
+    log_event = {
+        "id": "evt-new",
+        "timestamp": 1_700_000_020_000,
+        "message": (
+            "FAULT_DB_TIMEOUT route=/test-fault/db-timeout "
+            "reason=db_statement_timeout latency=5.02"
+        ),
+    }
+    pause_states = iter([False, False, True])
+
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "_is_self_healing_paused",
+        lambda: next(pause_states),
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "_get_demo_reset_epoch_seconds",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "_check_and_set_cooldown",
+        lambda fault_code: False,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "decode_cw_payload",
+        lambda event: {
+            "logGroup": "/ecs/cream-task",
+            "logStream": "ecs/app/1",
+            "logEvents": [log_event],
+        },
+    )
+    backboard_message = Mock(return_value={"summary": "Use the packaged fix."})
+    invoke_claude = Mock(return_value="patched")
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "backboard_message",
+        backboard_message,
+    )
+    monkeypatch.setattr(
+        fault_router_lambda,
+        "invoke_claude",
+        invoke_claude,
+    )
+
+    result = fault_router_lambda.lambda_handler({"awslogs": {"data": "unused"}}, None)
+
+    assert result["statusCode"] == 200
+    backboard_message.assert_called_once()
+    invoke_claude.assert_not_called()

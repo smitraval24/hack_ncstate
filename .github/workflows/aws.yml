@@ -17,6 +17,10 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
 jobs:
   deploy:
     name: Deploy

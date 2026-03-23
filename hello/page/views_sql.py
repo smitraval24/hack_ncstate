@@ -29,8 +29,8 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # FIXED: Use valid SQL query instead of malformed syntax
-        db.session.execute(text("SELECT 1 as test_query"))
+        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
+        db.session.execute(text("SELECT FROM"))
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}

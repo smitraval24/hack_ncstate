@@ -444,33 +444,20 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert updates["verification"]["health_check_status"] == "http_500"
         assert updates["verification"]["latency_after"] == 1.25
 
+    @patch("hello.developer.views._pause_self_healing")
     @patch("hello.developer.views._reset_faulty_code")
     @patch("hello.developer.views._clear_fault_cooldowns")
     @patch("hello.developer.views._record_demo_reset")
     @patch("hello.developer.views.reset_live_incidents")
-    @patch("hello.developer.views.get_live_incidents")
     def test_reset_incidents_restores_only_auto_healed_faults(
         self,
-        mock_get_live_incidents,
         mock_reset_live_incidents,
         mock_record_demo_reset,
         mock_clear_fault_cooldowns,
         mock_reset_faulty_code,
+        mock_pause_self_healing,
     ):
-        mock_get_live_incidents.return_value = [
-            {
-                "error_code": "FAULT_SQL_INJECTION_TEST",
-                "status": "resolved",
-                "remediation": {"action_type": "auto_fix_pushed"},
-                "verification": {"success": True},
-            },
-            {
-                "error_code": "FAULT_DB_TIMEOUT",
-                "status": "detected",
-                "remediation": {"action_type": None},
-                "verification": {"success": None},
-            },
-        ]
+        mock_pause_self_healing.return_value = True
         mock_reset_live_incidents.return_value = 2
         mock_clear_fault_cooldowns.return_value = {
             "cleared": [
@@ -508,7 +495,78 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             "FAULT_EXTERNAL_API_LATENCY",
             "FAULT_SQL_INJECTION_TEST",
         ])
+        mock_pause_self_healing.assert_called_once_with()
+        mock_reset_live_incidents.assert_called_once_with()
         mock_record_demo_reset.assert_called_once()
+
+    @patch("hello.developer.views._pause_self_healing")
+    @patch("hello.developer.views._reset_faulty_code")
+    @patch("hello.developer.views._clear_fault_cooldowns")
+    @patch("hello.developer.views._record_demo_reset")
+    @patch("hello.developer.views.reset_live_incidents")
+    def test_reset_incidents_fails_if_pause_cannot_be_persisted(
+        self,
+        mock_reset_live_incidents,
+        mock_record_demo_reset,
+        mock_clear_fault_cooldowns,
+        mock_reset_faulty_code,
+        mock_pause_self_healing,
+    ):
+        mock_pause_self_healing.return_value = False
+
+        response = self.client.post(url_for("developer.reset_incidents"))
+
+        assert response.status_code == 503
+        payload = response.get_json()
+        assert payload["success"] is False
+        assert payload["self_healing_paused"] is False
+        assert payload["per_file_results"] == {}
+        mock_record_demo_reset.assert_not_called()
+        mock_clear_fault_cooldowns.assert_not_called()
+        mock_reset_faulty_code.assert_not_called()
+        mock_reset_live_incidents.assert_not_called()
+
+    @patch("hello.developer.views._pause_self_healing")
+    @patch("hello.developer.views._reset_faulty_code")
+    @patch("hello.developer.views._clear_fault_cooldowns")
+    @patch("hello.developer.views._record_demo_reset")
+    @patch("hello.developer.views.reset_live_incidents")
+    def test_reset_incidents_fails_if_fault_restore_fails(
+        self,
+        mock_reset_live_incidents,
+        mock_record_demo_reset,
+        mock_clear_fault_cooldowns,
+        mock_reset_faulty_code,
+        mock_pause_self_healing,
+    ):
+        mock_pause_self_healing.return_value = True
+        mock_clear_fault_cooldowns.return_value = {
+            "cleared": ["FAULT_DB_TIMEOUT"],
+            "errors": {},
+        }
+        mock_reset_faulty_code.return_value = {
+            "success": False,
+            "fault_codes": ["FAULT_DB_TIMEOUT"],
+            "per_file_results": {
+                "hello/page/views_db.py": {
+                    "ok": False,
+                    "error": "GitHub API failed",
+                }
+            },
+            "error": "GitHub API failed",
+        }
+
+        response = self.client.post(url_for("developer.reset_incidents"))
+
+        assert response.status_code == 502
+        payload = response.get_json()
+        assert payload["success"] is False
+        assert payload["self_healing_paused"] is True
+        assert payload["per_file_results"]["hello/page/views_db.py"]["ok"] is False
+        mock_record_demo_reset.assert_called_once()
+        mock_clear_fault_cooldowns.assert_called_once()
+        mock_reset_faulty_code.assert_called_once()
+        mock_reset_live_incidents.assert_not_called()
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incidents_api_data_handles_missing_nested_sections(self, mock_fetch_incidents):

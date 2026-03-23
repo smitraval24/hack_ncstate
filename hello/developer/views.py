@@ -1334,22 +1334,60 @@ def store_in_cache(incident_id):
 def reset_incidents():
     """Clear demo state, restore ALL faults, and pause self-healing."""
     try:
-        count = reset_live_incidents()
+        # Pause self-healing so the Lambda does not fix the restored faults
+        pause_ok = _pause_self_healing()
+        if not pause_ok:
+            logger.error("Reset aborted because self-healing could not be paused in SSM")
+            return jsonify({
+                "success": False,
+                "error": "Failed to pause self-healing; reset aborted.",
+                "deleted": 0,
+                "restored_fault_codes": [],
+                "cleared_cooldowns": [],
+                "cooldown_reset_errors": {},
+                "code_reset": {
+                    "method": "reset_lambda",
+                    "success": False,
+                    "error": "Reset skipped because self-healing could not be paused.",
+                    "per_file_results": {},
+                },
+                "per_file_results": {},
+                "forced_ecs_deploy": False,
+                "self_healing_paused": False,
+            }), 503
+
         reset_at = datetime.now()
         _record_demo_reset(reset_at)
-        cooldown_reset = _clear_fault_cooldowns(sorted(FAULT_FILE_PATH_MAP.keys()))
-
-        # Pause self-healing so the Lambda does not fix the restored faults
-        _pause_self_healing()
+        all_fault_codes = sorted(FAULT_FILE_PATH_MAP.keys())
+        cooldown_reset = _clear_fault_cooldowns(all_fault_codes)
 
         # Always restore ALL known fault handlers to their faulty template
         # code so the full self-healing demo cycle can be re-tested.
-        all_fault_codes = sorted(FAULT_FILE_PATH_MAP.keys())
         code_reset_result = _reset_faulty_code(all_fault_codes)
         restored_fault_codes = code_reset_result.get(
             "fault_codes",
             all_fault_codes,
         )
+        per_file_results = code_reset_result.get("per_file_results", {})
+
+        if not code_reset_result.get("success", False):
+            logger.error("Reset aborted because faulty code restore failed: %s", code_reset_result)
+            return jsonify({
+                "success": False,
+                "error": code_reset_result.get("error")
+                or "Failed to restore the faulty code templates.",
+                "deleted": 0,
+                "restored_fault_codes": restored_fault_codes,
+                "cleared_cooldowns": cooldown_reset["cleared"],
+                "cooldown_reset_errors": cooldown_reset["errors"],
+                "reset_at": reset_at.isoformat(),
+                "code_reset": code_reset_result,
+                "per_file_results": per_file_results,
+                "forced_ecs_deploy": code_reset_result.get("forced_ecs_deploy", False),
+                "self_healing_paused": True,
+            }), 502
+
+        count = reset_live_incidents()
 
         return jsonify({
             "success": True,
@@ -1359,6 +1397,7 @@ def reset_incidents():
             "cooldown_reset_errors": cooldown_reset["errors"],
             "reset_at": reset_at.isoformat(),
             "code_reset": code_reset_result,
+            "per_file_results": per_file_results,
             "forced_ecs_deploy": code_reset_result.get("forced_ecs_deploy", False),
             "self_healing_paused": True,
         })
@@ -1403,6 +1442,8 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
         return {
             "method": "none",
             "success": False,
+            "fault_codes": list(fault_codes),
+            "per_file_results": {},
             "error": "RESET_LAMBDA_NAME is not configured",
         }
 
@@ -1416,19 +1457,40 @@ def _reset_faulty_code(fault_codes: list[str]) -> dict:
         result = json.loads(response["Payload"].read())
         logger.info("Reset Lambda response: %s", result)
 
+        if response.get("FunctionError"):
+            error_message = (
+                result.get("errorMessage")
+                or result.get("errorType")
+                or "Reset Lambda returned a function error"
+            )
+            return {
+                "method": "reset_lambda",
+                "success": False,
+                "fault_codes": list(fault_codes),
+                "per_file_results": {},
+                "forced_ecs_deploy": False,
+                "error": error_message,
+            }
+
         return {
             "method": "reset_lambda",
             "success": result.get("success", False),
-            "fault_codes": list(FAULT_FILE_PATH_MAP.keys()),
+            "fault_codes": list(fault_codes),
             "per_file_results": result.get("results", {}),
             "any_committed": result.get("any_committed", False),
             "forced_ecs_deploy": result.get("forced_ecs_deploy", False),
+            "commit_sha": result.get("commit_sha"),
+            "error": result.get("error") or (
+                None if result.get("success", False) else "Reset Lambda reported a failure."
+            ),
         }
     except Exception as e:
         logger.exception("Reset Lambda invocation failed")
         return {
             "method": "reset_lambda",
             "success": False,
+            "fault_codes": list(fault_codes),
+            "per_file_results": {},
             "error": str(e),
         }
 
