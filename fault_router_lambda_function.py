@@ -350,6 +350,21 @@ def invoke_claude(incident, analysis):
         messages.append({"role": "user", "content": tool_results})
 
 FAULT_COOLDOWN_SECONDS = 600  # 10-minute cooldown per fault code
+SELF_HEALING_PAUSED_PARAM = "/cream/self-healing-paused"
+
+
+def _is_self_healing_paused() -> bool:
+    """Return True if the self-healing loop is paused via SSM."""
+    ssm = boto3.client("ssm")
+    try:
+        ssm.get_parameter(Name=SELF_HEALING_PAUSED_PARAM)
+        return True
+    except ssm.exceptions.ParameterNotFound:
+        return False
+    except Exception as e:
+        print(f"SSM_PAUSE_CHECK_ERROR: {e}")
+        return False
+
 
 def _check_and_set_cooldown(fault_code: str) -> bool:
     """Return True if this fault was already processed recently (skip it)."""
@@ -370,6 +385,10 @@ def _check_and_set_cooldown(fault_code: str) -> bool:
 
 # This function handles the lambda handler work for this file.
 def lambda_handler(event, context):
+    if _is_self_healing_paused():
+        print("SKIP: self-healing loop is paused")
+        return {"statusCode": 200, "body": "paused"}
+
     cw = decode_cw_payload(event)
     log_group = cw.get("logGroup")
     log_stream = cw.get("logStream")
