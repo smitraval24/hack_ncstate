@@ -231,6 +231,8 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         assert b"Detected vs Resolved" in response.data
         assert b"Severity Distribution" in response.data
         assert b"Incident Feed" in response.data
+        assert b"7 mins" in response.data
+        assert b"88%" in response.data
 
     @patch("hello.developer.views._fetch_incidents")
     def test_incident_detail_renders_dark_report_theme(self, mock_fetch_incidents):

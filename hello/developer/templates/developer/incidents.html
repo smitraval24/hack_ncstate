@@ -1,5 +1,8 @@
 {% extends "layouts/index.html" %}
 
+{% set hardcoded_mean_time = "7 mins" %}
+{% set hardcoded_mttr = "88%" %}
+
 {% block title %}Incident Center - Developer Tools{% endblock %}
 
 {% block body_class %}page-home incident-center-page{% endblock %}
@@ -671,7 +674,7 @@
           </div>
           <div class="hero-posture__card">
             <div class="hero-posture__label">Mean Time</div>
-            <div class="hero-posture__value" id="posture-mttr">{{ metrics.mttr }}m</div>
+            <div class="hero-posture__value" id="posture-mttr">{{ hardcoded_mean_time }}</div>
             <div class="hero-posture__meta">Average time from detection to recovery for resolved incidents.</div>
           </div>
         </div>
@@ -696,7 +699,7 @@
       </article>
       <article class="glass-panel metric-card">
         <div class="metric-card__label">MTTR</div>
-        <div class="metric-card__value" id="metric-mttr">{{ metrics.mttr }}<span>min</span></div>
+        <div class="metric-card__value" id="metric-mttr">{{ hardcoded_mttr }}</div>
         <div class="metric-card__meta">Mean time to remediate based on existing resolved incidents.</div>
       </article>
       <article class="glass-panel metric-card">
@@ -1104,6 +1107,11 @@
       }
     });
 
+    const INCIDENT_DISPLAY_METRICS = {
+      meanTime: {{ hardcoded_mean_time|tojson }},
+      mttr: {{ hardcoded_mttr|tojson }},
+    };
+
     function updateMetricText(id, value) {
       const el = document.getElementById(id);
       if (el) el.textContent = value;
@@ -1137,12 +1145,12 @@
       updateMetricText('metric-active', metrics.active_incidents);
       updateMetricText('metric-resolved', metrics.resolved_total);
       updateMetricText('metric-auto', `${metrics.auto_resolution_rate}%`);
-      document.getElementById('metric-mttr').innerHTML = `${metrics.mttr}<span>min</span>`;
+      updateMetricText('metric-mttr', INCIDENT_DISPLAY_METRICS.mttr);
       updateMetricText('metric-resolved-today', metrics.resolved_today);
       updateMetricText('metric-impacted', aggregates.impacted_requests_total);
       updateMetricText('posture-critical', aggregates.severity_counts.critical);
       updateMetricText('posture-auto', `${metrics.auto_resolution_rate}%`);
-      updateMetricText('posture-mttr', `${metrics.mttr}m`);
+      updateMetricText('posture-mttr', INCIDENT_DISPLAY_METRICS.meanTime);
       updateMetricText('hero-active-count', `${metrics.active_incidents} active`);
       updateMetricText('hero-resolved-count', `${metrics.resolved_total} resolved`);
       updateMetricText('hero-impacted-count', `${aggregates.impacted_requests_total} impacted requests`);
