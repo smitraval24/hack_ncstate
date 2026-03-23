@@ -84,20 +84,20 @@ def _safe_clear_fault_cooldown(fault_code: str) -> bool:
             logger.debug("No cooldown parameter found for %s", fault_code)
             return True
         elif _is_access_denied_error(exc):
-            # Log as info instead of warning to reduce noise - this is expected in some environments
-            logger.info(
+            # Log as debug instead of info to reduce noise - this is expected in restricted environments
+            logger.debug(
                 "Skipping cooldown clear for %s: insufficient SSM permissions. "
                 "This is expected in restricted environments.",
                 fault_code
             )
             return False
         else:
-            # Other AWS errors should be logged but not raise to avoid breaking the app
-            logger.warning("Could not clear cooldown for %s: %s", fault_code, exc)
+            # Other AWS errors should be logged as info to avoid noise
+            logger.info("Could not clear cooldown for %s: %s", fault_code, exc)
             return False
     except Exception as exc:
-        # Non-AWS errors (import errors, etc.) should be logged
-        logger.warning("Unexpected error clearing cooldown for %s: %s", fault_code, exc)
+        # Non-AWS errors (import errors, etc.) should be logged as info
+        logger.info("Unexpected error clearing cooldown for %s: %s", fault_code, exc)
         return False
 
 
@@ -115,6 +115,67 @@ def clear_fault_cooldown(fault_code: str) -> bool:
         bool: True if successfully cleared or no action needed, False if access denied
     """
     return _safe_clear_fault_cooldown(fault_code)
+
+
+def safe_ssm_operation(operation_type: str, param_name: str, param_value: str = None) -> tuple[bool, str]:
+    """Safely perform SSM operations with proper error handling and reduced log noise.
+    
+    Args:
+        operation_type: 'get', 'put', or 'delete'
+        param_name: SSM parameter name
+        param_value: Value for put operations (optional)
+        
+    Returns:
+        tuple: (success: bool, result_or_error: str)
+    """
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        import boto3
+        from botocore.exceptions import ClientError, BotoCoreError
+        
+        ssm = boto3.client("ssm")
+        
+        if operation_type == "get":
+            response = ssm.get_parameter(Name=param_name)
+            return True, response["Parameter"]["Value"]
+        elif operation_type == "put":
+            if param_value is None:
+                return False, "No value provided for put operation"
+            ssm.put_parameter(Name=param_name, Value=param_value, Overwrite=True)
+            return True, "Parameter set successfully"
+        elif operation_type == "delete":
+            ssm.delete_parameter(Name=param_name)
+            return True, "Parameter deleted successfully"
+        else:
+            return False, f"Unknown operation type: {operation_type}"
+            
+    except (ClientError, BotoCoreError) as exc:
+        if _is_parameter_not_found_error(exc):
+            if operation_type == "delete":
+                logger.debug("Parameter %s not found for deletion (already cleared)", param_name)
+                return True, "Parameter already cleared"
+            else:
+                logger.debug("Parameter %s not found", param_name)
+                return False, "Parameter not found"
+        elif _is_access_denied_error(exc):
+            # Log as debug to reduce noise - this is expected in restricted environments
+            logger.debug(
+                "Access denied for SSM %s operation on %s. "
+                "This is expected in restricted environments.",
+                operation_type, param_name
+            )
+            return False, "Access denied (expected in restricted environments)"
+        else:
+            # Other AWS errors logged as info to avoid noise
+            logger.info("SSM %s operation failed for %s: %s", operation_type, param_name, exc)
+            return False, str(exc)
+    except Exception as exc:
+        # Non-AWS errors logged as info
+        logger.info("Unexpected error in SSM %s operation for %s: %s", operation_type, param_name, exc)
+        return False, str(exc)
 
 
 # Import fault route modules so their @page routes get registered.
