@@ -44,7 +44,7 @@ def test_fault_external_api():
     try:
         # INTENTIONAL BUG: 3s timeout against mock API with a high chance of
         # latency or malformed data.
-        r = requests.get(f"{mock_api_base_url}/data", timeout=10)
+        r = requests.get(f"{mock_api_base_url}/data", timeout=3)
         latency = time.time() - start
         current_app.logger.info(f"external_call_latency={latency:.2f}")
         r.raise_for_status()
