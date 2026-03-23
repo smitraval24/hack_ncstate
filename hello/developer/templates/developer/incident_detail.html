@@ -571,7 +571,31 @@
   {% set remediation = incident.remediation or {} %}
   {% set verification = incident.verification or {} %}
   {% set remediation_parameters = remediation.parameters or {} %}
-  {% set fix_summary = remediation_parameters.claude_output if remediation_parameters and remediation_parameters.claude_output is defined else None %}
+  {% set fix_summary = None %}
+  {% if remediation_parameters %}
+    {% if remediation_parameters.claude_output is defined and remediation_parameters.claude_output %}
+      {% set fix_summary = remediation_parameters.claude_output %}
+    {% elif remediation_parameters.summary is defined and remediation_parameters.summary %}
+      {% set fix_summary = remediation_parameters.summary %}
+    {% elif remediation_parameters.resolution_summary is defined and remediation_parameters.resolution_summary %}
+      {% set fix_summary = remediation_parameters.resolution_summary %}
+    {% endif %}
+  {% endif %}
+  {% set displayed_action = remediation.action_type %}
+  {% if not displayed_action and incident.status == 'resolved' %}
+    {% if incident.commit_sha or incident.run_url %}
+      {% set displayed_action = 'auto_fix_pushed' %}
+    {% else %}
+      {% set displayed_action = 'manual_resolution' %}
+    {% endif %}
+  {% endif %}
+  {% if not fix_summary and incident.status == 'resolved' %}
+    {% if incident.commit_sha %}
+      {% set fix_summary = 'CI/CD deployed commit ' ~ incident.commit_sha[:12] ~ ' and the post-deploy verification check passed.' %}
+    {% else %}
+      {% set fix_summary = 'Incident was marked resolved after the fix was deployed.' %}
+    {% endif %}
+  {% endif %}
 
   <div class="detail-shell">
     <a href="/developer/incidents" class="detail-back" data-reveal>
@@ -751,13 +775,15 @@
         <div class="action-list">
           <div class="action-item">
             <div class="action-item__label">Remediation Action</div>
-            <div class="action-item__value">{{ (remediation.action_type or 'Pending')|replace('_', ' ')|title }}</div>
+            <div class="action-item__value">{{ (displayed_action or 'Pending')|replace('_', ' ')|title }}</div>
           </div>
           <div class="action-item">
             <div class="action-item__label">Execution Timestamp</div>
             <div class="action-item__value">
               {% if remediation.execution_timestamp %}
                 {{ remediation.execution_timestamp.strftime('%Y-%m-%d %H:%M:%S') }}
+              {% elif incident.status == 'resolved' and incident.timestamp_resolved %}
+                {{ incident.timestamp_resolved.strftime('%Y-%m-%d %H:%M:%S') }}
               {% else %}
                 Not executed yet
               {% endif %}

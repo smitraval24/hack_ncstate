@@ -281,6 +281,34 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             in response.data
         )
 
+    @patch("hello.developer.views._fetch_incidents")
+    def test_incident_detail_derives_resolution_details_for_legacy_resolved_incidents(
+        self,
+        mock_fetch_incidents,
+    ):
+        incident = get_mock_incidents()[0]
+        incident["status"] = "resolved"
+        incident["timestamp_resolved"] = datetime(2026, 3, 23, 12, 30, 0)
+        incident["remediation"] = {
+            "action_type": None,
+            "parameters": None,
+            "execution_timestamp": None,
+        }
+        incident["commit_sha"] = "9d22c080d288abcd"
+        incident["run_url"] = "https://example.com/runs/123"
+        mock_fetch_incidents.return_value = ([incident], "mock", None)
+
+        response = self.client.get(
+            url_for("developer.incident_detail", incident_id=incident["id"])
+        )
+
+        assert response.status_code == 200
+        assert b"Auto Fix Pushed" in response.data
+        assert (
+            b"CI/CD deployed commit 9d22c080d288 and the post-deploy verification check passed."
+            in response.data
+        )
+
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views.create_live_incident")
     @patch("hello.developer.views.get_live_incidents")
@@ -353,7 +381,14 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             "",
         )
         assert mock_update_live_incident.call_args.args[0] == "LIVE-0002"
-        assert mock_update_live_incident.call_args.args[1]["status"] == "resolved"
+        updates = mock_update_live_incident.call_args.args[1]
+        assert updates["status"] == "resolved"
+        assert updates["remediation"]["action_type"] == "auto_fix_pushed"
+        assert updates["remediation"]["execution_timestamp"] is not None
+        assert (
+            updates["remediation"]["parameters"]["resolution_summary"]
+            == "CI/CD deployed the fix and the post-deploy verification check passed."
+        )
 
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views._verify_fault_route")
@@ -398,6 +433,94 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             "/test-fault/run",
             "",
         )
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views._verify_fault_route")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_callback_backfills_missing_remediation_details_on_success(
+        self,
+        mock_get_live_incidents,
+        mock_verify_fault_route,
+        mock_update_live_incident,
+    ):
+        mock_get_live_incidents.return_value = [
+            {
+                "id": "LIVE-0010",
+                "error_code": "FAULT_SQL_INJECTION_TEST",
+                "status": "in_progress",
+                "route": "/test-fault/run",
+                "symptoms": {"latency_p95_value": 0.8},
+                "remediation": {
+                    "action_type": None,
+                    "parameters": None,
+                    "execution_timestamp": None,
+                },
+            }
+        ]
+        mock_verify_fault_route.return_value = (True, "passed", 0.18)
+        mock_update_live_incident.return_value = {"id": "LIVE-0010"}
+
+        response = self.client.post(
+            url_for("developer.pipeline_callback"),
+            json={
+                "fault_codes": ["FAULT_SQL_INJECTION_TEST"],
+                "status": "success",
+                "commit_sha": "9d22c080d288abcd",
+                "run_url": "https://example.com/runs/42",
+            },
+        )
+
+        assert response.status_code == 200
+        updates = mock_update_live_incident.call_args.args[1]
+        assert updates["status"] == "resolved"
+        assert updates["remediation"]["action_type"] == "auto_fix_pushed"
+        assert updates["remediation"]["execution_timestamp"] is not None
+        assert (
+            updates["remediation"]["parameters"]["resolution_summary"]
+            == "CI/CD deployed commit 9d22c080d288 and the post-deploy verification check passed."
+        )
+        assert updates["remediation"]["parameters"]["commit_sha"] == "9d22c080d288abcd"
+        assert updates["remediation"]["parameters"]["run_url"] == "https://example.com/runs/42"
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views._get_incident_by_id")
+    def test_manual_resolve_backfills_remediation_details_when_missing(
+        self,
+        mock_get_incident_by_id,
+        mock_update_live_incident,
+    ):
+        mock_get_incident_by_id.return_value = {
+            "id": "LIVE-0099",
+            "status": "in_progress",
+            "symptoms": {"latency_p95_value": 2.4},
+            "root_cause": {
+                "source": "rag",
+                "confidence_score": None,
+                "explanation": "A known issue was identified.",
+            },
+            "remediation": {
+                "action_type": None,
+                "parameters": None,
+                "execution_timestamp": None,
+            },
+        }
+        mock_update_live_incident.return_value = {"id": "LIVE-0099"}
+
+        response = self.client.post(
+            url_for("developer.manual_resolve", incident_id="LIVE-0099"),
+            json={},
+        )
+
+        assert response.status_code == 200
+        updates = mock_update_live_incident.call_args.args[1]
+        assert updates["status"] == "resolved"
+        assert updates["remediation"]["action_type"] == "manual_resolution"
+        assert updates["remediation"]["execution_timestamp"] is not None
+        assert (
+            updates["remediation"]["parameters"]["resolution_summary"]
+            == "Incident was marked resolved manually after the fix was deployed."
+        )
+        assert updates["remediation"]["parameters"]["resolution_source"] == "manual_resolve"
 
     @patch("hello.developer.views._clear_fault_cooldowns")
     @patch("hello.developer.views.update_live_incident")

@@ -1215,6 +1215,60 @@ def _default_route_for_fault_code(fault_code: str) -> str:
     return FAULT_ROUTE_MAP.get(fault_code, "/test-fault")
 
 
+def _default_resolution_summary(resolution_source: str, commit_sha: str = "") -> str:
+    """Return a human-readable fallback summary for resolved incidents."""
+    short_sha = commit_sha[:12]
+    if resolution_source == "manual_resolve":
+        if short_sha:
+            return f"Incident was marked resolved manually after commit {short_sha} was deployed."
+        return "Incident was marked resolved manually after the fix was deployed."
+
+    if short_sha:
+        return f"CI/CD deployed commit {short_sha} and the post-deploy verification check passed."
+    return "CI/CD deployed the fix and the post-deploy verification check passed."
+
+
+def _build_resolved_remediation_update(
+    incident: dict | None,
+    now: datetime,
+    *,
+    resolution_source: str,
+    default_action_type: str,
+    commit_sha: str = "",
+    run_url: str = "",
+    summary: str = "",
+) -> dict:
+    """Build remediation details for a resolved incident without losing prior data."""
+    remediation = dict((incident or {}).get("remediation") or {})
+    parameters = dict(remediation.get("parameters") or {})
+
+    action_type = remediation.get("action_type")
+    if action_type in (None, "", "pending_analysis"):
+        action_type = default_action_type
+
+    resolved_summary = (
+        parameters.get("claude_output")
+        or parameters.get("summary")
+        or parameters.get("resolution_summary")
+        or summary
+        or _default_resolution_summary(resolution_source, commit_sha)
+    )
+    if resolved_summary and not parameters.get("claude_output"):
+        parameters["resolution_summary"] = resolved_summary
+
+    if commit_sha:
+        parameters["commit_sha"] = commit_sha
+    if run_url:
+        parameters["run_url"] = run_url
+    parameters["resolution_source"] = resolution_source
+
+    return {
+        "action_type": action_type,
+        "parameters": parameters or None,
+        "execution_timestamp": remediation.get("execution_timestamp") or now,
+    }
+
+
 # This function handles the incident to document work for this file.
 def _incident_to_document(incident: dict) -> str:
     """Serialize an incident dict into a text document for RAG indexing."""
@@ -1618,6 +1672,8 @@ def pipeline_callback():
     data = request.get_json(force=True, silent=True) or {}
     fault_codes = data.get("fault_codes", [])
     pipeline_status = data.get("status", "")
+    commit_sha = str(data.get("commit_sha", "") or "")
+    run_url = str(data.get("run_url", "") or "")
     now = datetime.now()
 
     if not fault_codes:
@@ -1659,8 +1715,16 @@ def pipeline_callback():
                         "health_check_status": "passed",
                         "success": True,
                     },
-                    "commit_sha": data.get("commit_sha", ""),
-                    "run_url": data.get("run_url", ""),
+                    "remediation": _build_resolved_remediation_update(
+                        inc,
+                        now,
+                        resolution_source="pipeline_callback",
+                        default_action_type="auto_fix_pushed",
+                        commit_sha=commit_sha,
+                        run_url=run_url,
+                    ),
+                    "commit_sha": commit_sha,
+                    "run_url": run_url,
                 }
             else:
                 updates = {
@@ -1673,8 +1737,8 @@ def pipeline_callback():
                         "health_check_status": health_status or "failed",
                         "success": False,
                     },
-                    "commit_sha": data.get("commit_sha", ""),
-                    "run_url": data.get("run_url", ""),
+                    "commit_sha": commit_sha,
+                    "run_url": run_url,
                 }
 
             result = update_live_incident(inc["id"], updates)
@@ -1699,8 +1763,16 @@ def pipeline_callback():
                     "health_check_status": "passed",
                     "success": True,
                 },
-                "commit_sha": data.get("commit_sha", ""),
-                "run_url": data.get("run_url", ""),
+                "remediation": _build_resolved_remediation_update(
+                    created,
+                    now,
+                    resolution_source="pipeline_callback",
+                    default_action_type="auto_fix_pushed",
+                    commit_sha=commit_sha,
+                    run_url=run_url,
+                ),
+                "commit_sha": commit_sha,
+                "run_url": run_url,
             }
         else:
             updates = {
@@ -1711,8 +1783,8 @@ def pipeline_callback():
                     "health_check_status": health_status or "failed",
                     "success": False,
                 },
-                "commit_sha": data.get("commit_sha", ""),
-                "run_url": data.get("run_url", ""),
+                "commit_sha": commit_sha,
+                "run_url": run_url,
             }
 
         result = update_live_incident(created["id"], updates)
@@ -1762,6 +1834,8 @@ def manual_resolve(incident_id):
 
     # Compute a basic confidence score from available data
     confidence = _compute_confidence(incident)
+    commit_sha = str(data.get("commit_sha") or incident.get("commit_sha") or "")
+    run_url = str(data.get("run_url") or incident.get("run_url") or "")
 
     updates = {
         "status": "resolved",
@@ -1782,6 +1856,16 @@ def manual_resolve(incident_id):
             "confidence_score": confidence,
             "explanation": root_cause.get("explanation"),
         }
+
+    updates["remediation"] = _build_resolved_remediation_update(
+        incident,
+        now,
+        resolution_source="manual_resolve",
+        default_action_type="manual_resolution",
+        commit_sha=commit_sha,
+        run_url=run_url,
+        summary=str(data.get("fix_summary") or data.get("summary") or ""),
+    )
 
     # Include commit info if provided
     if data.get("commit_sha"):
