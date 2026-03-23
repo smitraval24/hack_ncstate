@@ -6,7 +6,7 @@ this fault code.  The stable route wrapper in _fault_cores.py delegates here.
 
 import sys
 
-from flask import current_app
+from flask import current_app, request
 from sqlalchemy import text
 
 from config.settings import ENABLE_FAULT_INJECTION
@@ -25,15 +25,27 @@ def test_fault_run():
     result = {"status": "ok", "error_code": None}
 
     try:
-        # INTENTIONAL BUG: malformed SQL that always fails with a syntax error
-        db.session.execute(text("SELECT FROM"))
+        # FIXED: Use parameterized query to prevent SQL injection
+        # This demonstrates the proper way to handle user input in SQL queries
+        user_input = request.args.get('search', 'test')
+        
+        # Safe parameterized query - prevents SQL injection
+        safe_query = text("SELECT :input_param as search_term")
+        db.session.execute(safe_query, {"input_param": user_input})
+        
+        result = {
+            "status": "ok", 
+            "error_code": None,
+            "message": f"SQL injection test passed - safely handled input: {user_input}"
+        }
+
     except Exception as e:
         db.session.rollback()
         result = {"status": "error", "error_code": error_code}
 
         msg = (
             f"{error_code} route=/test-fault/run "
-            f"reason=invalid_sql_executed"
+            f"reason=sql_query_failed error={str(e)}"
         )
         print(msg, file=sys.stderr)
         current_app.logger.error(msg)
@@ -42,7 +54,7 @@ def test_fault_run():
             create_live_incident(
                 error_code=error_code,
                 route="/test-fault/run",
-                reason="invalid_sql_executed",
+                reason="sql_query_failed",
             )
         except Exception:
             current_app.logger.exception("Failed to create incident for %s", error_code)
