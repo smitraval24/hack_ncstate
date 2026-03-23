@@ -2,25 +2,13 @@ Fault Code: FAULT_SQL_INJECTION_TEST
 Target File: hello/page/views_sql.py
 Target Function: test_fault_run
 
-Goal:
-Make POST /test-fault/run succeed with HTTP 200 instead of raising a SQL error.
+Bug Pattern: The function executes a malformed SQL statement that will
+always fail with a syntax error. The SQL string is missing required
+clauses.
 
-Authoritative Fix:
-- Preserve the existing route decorator, function name, and fault-page rendering contract.
-- Preserve any `_is_fault_verification_request()` behavior already present so verification probes do not create incidents.
-- Read the optional `test_param` form value and coerce it to an integer safely.
-- Do not add regex blacklists or SQL keyword filters. The correct defense is parameter binding, not pattern matching.
-- Execute a parameterized query such as:
-  `db.session.execute(text("SELECT :param AS test_value"), {"param": safe_param})`
-- Commit the transaction after a successful execute.
-- Leave the existing rollback and error rendering path intact for real exceptions.
+What "fixed" looks like: The SQL statement is syntactically valid and
+executes successfully. The fix is changing the SQL string only —
+nothing else in the function needs to change.
 
-Important Constraints:
-- The healed route must return an HTTP status below 400 when Claude's post-deploy verification sends `X-Fault-Verification: 1`.
-- Keep the existing imports unless a tiny addition is genuinely required.
-- Do not change the route path `/test-fault/run`.
-- Do not create incidents on the success path.
-
-Implementation Notes:
-- Default invalid or missing user input to a safe integer like `1`.
-- If the current file already contains part of this fix, keep the good parts and only change what is still incorrect.
+Scope: ONE line change. Do not add parameter binding, form parsing,
+input validation, or new variables.

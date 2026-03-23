@@ -128,10 +128,10 @@ def register_cli(app):
 
     @app.cli.command("seed-kb")
     def seed_kb_command():
-        """Seed the Backboard RAG knowledge base with 15 example incidents."""
+        """Seed the Backboard RAG knowledge base with fault/solution entries."""
         from hello.incident.seed_knowledge_base import seed_knowledge_base
 
-        click.echo("Uploading 15 knowledge-base entries to Backboard …")
+        click.echo("Uploading knowledge-base entries to Backboard …")
         results = seed_knowledge_base()
         ok = sum(1 for r in results if r.get("document_id"))
         fail = len(results) - ok
@@ -139,6 +139,20 @@ def register_cli(app):
         for r in results:
             status = r.get("document_id") or "FAILED"
             click.echo(f"  {r['filename']}  →  {status}")
+
+    @app.cli.command("clear-kb")
+    def clear_kb_command():
+        """Delete all documents from the Backboard RAG knowledge base."""
+        from hello.incident.seed_knowledge_base import clear_knowledge_base
+
+        click.echo("Deleting all documents from Backboard …")
+        results = clear_knowledge_base()
+        deleted = sum(1 for r in results if r.get("deleted"))
+        failed = sum(1 for r in results if r.get("error"))
+        click.echo(f"Done: {deleted} deleted, {failed} failed.")
+        for r in results:
+            status = "deleted" if r.get("deleted") else f"FAILED: {r.get('error')}"
+            click.echo(f"  {r['document_id']}  →  {status}")
 
 
 # This function handles the extensions work for this file.

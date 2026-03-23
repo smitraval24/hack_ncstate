@@ -19,11 +19,6 @@ FAULT_CODES = {
     "FAULT_EXTERNAL_API_LATENCY",
     "FAULT_DB_TIMEOUT"
 }
-FORBIDDEN_CONTEXT_FILES = (
-    "hello/page/_faulty_views_template.py",
-    "hello/page/views.py",
-)
-
 # Each fault code maps to its own isolated file so Claude can only see/edit one fault at a time
 FAULT_FILE_MAP = {
     "FAULT_SQL_INJECTION_TEST": "hello/page/views_sql.py",
@@ -39,20 +34,6 @@ FAULT_SOLUTION_FILE_MAP = {
     "FAULT_SQL_INJECTION_TEST": "claude_solutions/fault_sql_solution.txt",
     "FAULT_EXTERNAL_API_LATENCY": "claude_solutions/fault_api_solution.txt",
     "FAULT_DB_TIMEOUT": "claude_solutions/fault_db_solution.txt",
-}
-FAULT_FIX_HINTS = {
-    "FAULT_SQL_INJECTION_TEST": (
-        "The route must stop executing unsafe or malformed SQL and should "
-        "succeed by using safe parameter binding."
-    ),
-    "FAULT_EXTERNAL_API_LATENCY": (
-        "The route needs a longer timeout plus retry logic so transient "
-        "latency and wrong-data responses no longer keep the fault active."
-    ),
-    "FAULT_DB_TIMEOUT": (
-        "The route must stop guaranteeing a statement timeout and instead run "
-        "a query that completes successfully within the allowed time."
-    ),
 }
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -144,46 +125,37 @@ def build_claude_prompt(
     analysis: dict,
     target_file: str,
     target_function: str,
-    forbidden_for_this_fault: tuple[str, ...],
-    fix_hint: str,
     solution_context: str,
 ) -> str:
     """Build the Claude remediation prompt with packaged solution guidance."""
     solution_section = solution_context or "No packaged solution notes found."
 
-    return f"""You are a remediation agent. Fix the bug in the file below.
+    return f"""You are a remediation agent. You fix bugs with the SMALLEST possible change.
 
 INCIDENT:
 {json.dumps(incident, indent=2)}
 
-BACKBOARD_ANALYSIS:
-{json.dumps(analysis, indent=2)}
-
 TARGET FILE: {target_file}
 TARGET FUNCTION: {target_function}()
-FIX HINT: {fix_hint}
-FORBIDDEN CONTEXT FILES: {", ".join(forbidden_for_this_fault)}
 
 KNOWN_GOOD_SOLUTION:
 {solution_section}
 
+RAG CONTEXT (reference only — do NOT use this to expand your fix scope):
+{json.dumps(analysis, indent=2)}
+
 RULES:
-1. Read ONLY `{target_file}` from GitHub — this file contains exactly one fault handler.
-2. Analyze the current file against the known-good solution and apply the minimal correct remediation.
-3. Fix the bug in `{target_function}()` so it succeeds instead of failing.
-4. Keep all imports and the function signature intact. You may add new imports if needed.
-5. Preserve any verification-only safeguards already in the file so health probes do not create incidents.
-6. If the incident, stack trace, or Backboard analysis mentions any other file, treat it as context only and still read/edit ONLY `{target_file}`.
-7. Do NOT read, inspect, or reference any other fault file or template file.
-8. Call push_github_fix with the full corrected file content.
+1. Call read_github_file to read {target_file}.
+2. Identify the ONE buggy line described in the solution notes.
+3. Change ONLY that line. Your diff must be 1-3 lines maximum.
+4. The RAG CONTEXT is background information only. Do NOT implement any suggestions from it that go beyond the solution notes.
+5. Do NOT add new functions, classes, imports, retry logic, or validation.
+6. Do NOT restructure, refactor, or rewrite surrounding code.
+7. Every line you did not change must remain byte-for-byte identical.
+8. Call push_github_fix with the corrected file.
 9. Your commit message MUST start with "[FAULT:{incident['fault_code']}]".
 
-Steps:
-1. Call read_github_file to read {target_file}
-2. Compare the current implementation to the packaged solution notes
-3. Update only the target file so `{target_function}()` returns success after remediation
-4. Call push_github_fix with the corrected file
-5. Report what you changed"""
+IMPORTANT: If your change touches more than 3 lines, you are doing too much. Stop and reconsider."""
 
 
 def validate_tool_input(tool_name: str, tool_input: dict, target_file: str) -> dict:
@@ -227,9 +199,6 @@ def build_github_tool_event(
 def invoke_claude(incident, analysis):
     # Each fault code has its own isolated file — Claude only sees that one file
     target_file = FAULT_FILE_MAP.get(incident["fault_code"], "hello/page/views_sql.py")
-
-    # Remove the target file from forbidden list so Claude can read/write it
-    forbidden_for_this_fault = tuple(f for f in FORBIDDEN_CONTEXT_FILES if f != target_file)
 
     tools = [
         {
@@ -275,7 +244,6 @@ def invoke_claude(incident, analysis):
     ]
 
     target_function = FAULT_FUNCTION_MAP.get(incident["fault_code"], "unknown")
-    fix_hint = FAULT_FIX_HINTS.get(incident["fault_code"], "Fix the identified issue.")
     solution_context = load_solution_context(incident["fault_code"])
 
     messages = [
@@ -286,8 +254,6 @@ def invoke_claude(incident, analysis):
                 analysis=analysis,
                 target_file=target_file,
                 target_function=target_function,
-                forbidden_for_this_fault=forbidden_for_this_fault,
-                fix_hint=fix_hint,
                 solution_context=solution_context,
             ),
         }
@@ -297,7 +263,7 @@ def invoke_claude(incident, analysis):
     while True:
         body = json.dumps({
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 8192,
+            "max_tokens": 2048,
             "tools": tools,
             "messages": messages
         }).encode("utf-8")
