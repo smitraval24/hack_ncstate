@@ -1,5 +1,6 @@
 """This file keeps tests for the developer part of the project so new changes stay safe."""
 
+import json
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
@@ -135,6 +136,135 @@ class TestDeveloperIncidentViews(ViewTestMixin):
         merged = _merge_incidents([live_incident], [cloudwatch_incident])
 
         assert [incident["id"] for incident in merged] == ["LIVE-0002", "CW-0002"]
+
+    def test_merge_incidents_combines_exact_cloudwatch_match_into_live_incident(self):
+        now = datetime.now().replace(microsecond=0)
+        live_incident = _make_incident(
+            "LIVE-0100",
+            now,
+            None,
+            "in_progress",
+            log_marker="external_timeout",
+        )
+        live_incident["root_cause"] = {
+            "source": None,
+            "confidence_score": None,
+            "explanation": None,
+        }
+
+        cloudwatch_incident = _make_incident(
+            "CW-0100",
+            now - timedelta(seconds=30),
+            None,
+            "in_progress",
+            log_marker="external_timeout",
+        )
+        cloudwatch_incident["root_cause"] = {
+            "source": "backboard",
+            "confidence_score": 0.88,
+            "explanation": "The upstream timeout budget was too aggressive for the demo route.",
+        }
+
+        merged = _merge_incidents([live_incident], [cloudwatch_incident])
+
+        assert len(merged) == 1
+        assert merged[0]["id"] == "LIVE-0100"
+        assert merged[0]["root_cause"]["source"] == "backboard"
+        assert (
+            merged[0]["root_cause"]["explanation"]
+            == "The upstream timeout budget was too aggressive for the demo route."
+        )
+        assert merged[0]["root_cause"]["confidence_score"] == 0.88
+
+    def test_merge_incidents_combines_unique_fault_router_match_into_live_incident(self):
+        now = datetime.now().replace(microsecond=0)
+        live_incident = {
+            "id": "LIVE-0200",
+            "timestamp_opened": now,
+            "timestamp_resolved": None,
+            "incident_type": "SQL Injection Error",
+            "severity": "high",
+            "status": "detected",
+            "route": "/test-fault/run",
+            "error_code": "FAULT_SQL_INJECTION_TEST",
+            "symptoms": {
+                "latency_p95": "0.80s",
+                "latency_p95_value": 0.8,
+                "endpoint": "/test-fault/run",
+                "log_marker": "invalid_sql_executed",
+                "affected_requests": 1,
+            },
+            "breadcrumbs": {
+                "recent_logs": [],
+                "metric_snapshot": {},
+                "correlated_events": [],
+            },
+            "root_cause": {
+                "source": None,
+                "confidence_score": None,
+                "explanation": None,
+            },
+            "remediation": {
+                "action_type": None,
+                "parameters": None,
+                "execution_timestamp": None,
+            },
+            "verification": {
+                "latency_before": None,
+                "latency_after": None,
+                "health_check_status": None,
+                "success": None,
+            },
+        }
+        cloudwatch_incident = {
+            "id": "FR-0200",
+            "timestamp_opened": now + timedelta(minutes=1),
+            "timestamp_resolved": None,
+            "incident_type": "SQL Errors",
+            "severity": "high",
+            "status": "in_progress",
+            "route": "-",
+            "error_code": "FAULT_SQL_INJECTION_TEST",
+            "symptoms": {
+                "latency_p95": "—",
+                "latency_p95_value": 0.0,
+                "endpoint": "-",
+                "log_marker": "FAULT_SQL_INJECTION_TEST",
+                "affected_requests": 1,
+            },
+            "breadcrumbs": {
+                "recent_logs": ["2026-03-24T12:00:00 BACKBOARD_ANALYSIS"],
+                "metric_snapshot": {},
+                "correlated_events": ["thread_id=thr_123"],
+            },
+            "root_cause": {
+                "source": "backboard",
+                "confidence_score": None,
+                "explanation": "Malformed SQL in the demo route triggered the incident.",
+            },
+            "remediation": {
+                "action_type": None,
+                "parameters": None,
+                "execution_timestamp": None,
+            },
+            "verification": {
+                "latency_before": None,
+                "latency_after": None,
+                "health_check_status": None,
+                "success": None,
+            },
+        }
+
+        merged = _merge_incidents([live_incident], [cloudwatch_incident])
+
+        assert len(merged) == 1
+        assert merged[0]["id"] == "FR-0200"
+        assert merged[0]["route"] == "/test-fault/run"
+        assert merged[0]["symptoms"]["log_marker"] == "invalid_sql_executed"
+        assert (
+            merged[0]["root_cause"]["explanation"]
+            == "Malformed SQL in the demo route triggered the incident."
+        )
 
     @patch("hello.developer.views.http_requests.post")
     @patch("hello.developer.views.http_requests.get")
@@ -340,6 +470,35 @@ class TestDeveloperIncidentViews(ViewTestMixin):
             route="/test-fault/run",
             reason="invalid_sql_executed",
         )
+
+    @patch("hello.developer.views.update_live_incident")
+    @patch("hello.developer.views.create_live_incident")
+    @patch("hello.developer.views.get_live_incidents")
+    def test_pipeline_pending_extracts_content_from_backboard_json_payload(
+        self,
+        mock_get_live_incidents,
+        mock_create_live_incident,
+        mock_update_live_incident,
+    ):
+        mock_get_live_incidents.return_value = []
+        mock_create_live_incident.return_value = {"id": "LIVE-0009"}
+        mock_update_live_incident.return_value = {"id": "LIVE-0009"}
+
+        response = self.client.post(
+            url_for("developer.pipeline_pending"),
+            json={
+                "fault_code": "FAULT_SQL_INJECTION_TEST",
+                "route": "/test-fault/run",
+                "reason": "invalid_sql_executed",
+                "rag_analysis": json.dumps({"content": "Malformed SQL caused the failure."}),
+            },
+        )
+
+        assert response.status_code == 200
+        updates = mock_update_live_incident.call_args.args[1]
+        assert updates["root_cause"]["source"] == "rag"
+        assert updates["root_cause"]["explanation"] == "Malformed SQL caused the failure."
+        assert updates["root_cause"]["confidence_score"] == 0.6
 
     @patch("hello.developer.views.update_live_incident")
     @patch("hello.developer.views.create_live_incident")

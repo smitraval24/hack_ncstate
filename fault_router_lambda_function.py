@@ -563,7 +563,13 @@ def lambda_handler(event, context):
                     f"Message: {inc['raw_message']}"
                 ),
             )
-            print("BACKBOARD_ANALYSIS:", json.dumps(analysis)[:4000])
+            analysis_payload = (
+                dict(analysis)
+                if isinstance(analysis, dict)
+                else {"content": str(analysis)}
+            )
+            analysis_payload["fault_code"] = inc["fault_code"]
+            print("BACKBOARD_ANALYSIS:", json.dumps(analysis_payload)[:4000])
 
             if _is_self_healing_paused():
                 print(f"SKIP: self-healing loop was paused before remediation for {inc['fault_code']}")
@@ -584,11 +590,16 @@ def lambda_handler(event, context):
                 try:
                     route_match = ROUTE_RE.search(inc.get("raw_message", ""))
                     reason_match = REASON_RE.search(inc.get("raw_message", ""))
+                    analysis_content = ""
+                    if isinstance(analysis, dict):
+                        analysis_content = str(analysis.get("content") or "").strip()
+                    if not analysis_content:
+                        analysis_content = json.dumps(analysis)[:2000]
                     record_body = json.dumps({
                         "fault_code": inc["fault_code"],
                         "route": route_match.group(1) if route_match else "",
                         "reason": reason_match.group(1) if reason_match else "",
-                        "rag_analysis": json.dumps(analysis)[:2000],
+                        "rag_analysis": analysis_content,
                         "claude_output": agent_output[:2000],
                     }).encode("utf-8")
                     req = urllib.request.Request(
@@ -615,4 +626,3 @@ def lambda_handler(event, context):
             continue
 
     return {"statusCode": 200, "body": "ok"}
-

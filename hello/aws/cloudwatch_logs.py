@@ -447,7 +447,9 @@ def build_fault_router_incidents(
             if not isinstance(content, str):
                 content = str(content)
 
-            fault_code = _extract_fault_code_any(content, allowed_faults)
+            fault_code = analysis.get("fault_code")
+            if fault_code not in allowed_faults:
+                fault_code = _extract_fault_code_any(content, allowed_faults)
             if not fault_code:
                 # Sometimes Backboard replies may not mention the code.
                 # Try to associate with current request.
@@ -473,9 +475,10 @@ def build_fault_router_incidents(
                 last_fault_by_request[request_id] = fault_code
             continue
 
-        # Gemini remediation output: treat as "resolved" stage.
-        if msg.startswith("GEMINI_OUTPUT:"):
-            output = msg[len("GEMINI_OUTPUT:") :].strip()
+        # Remediation output: treat as "resolved" stage.
+        if msg.startswith(("GEMINI_OUTPUT:", "CLAUDE_OUTPUT:")):
+            prefix = "CLAUDE_OUTPUT:" if msg.startswith("CLAUDE_OUTPUT:") else "GEMINI_OUTPUT:"
+            output = msg[len(prefix) :].strip()
             fault_code = None
             if request_id:
                 fault_code = last_fault_by_request.get(request_id)
@@ -489,7 +492,7 @@ def build_fault_router_incidents(
             inc["status"] = "resolved"
             inc["timestamp_resolved"] = ev.timestamp.replace(tzinfo=None)
             inc["remediation"] = {
-                "action_type": "gemini_autofix",
+                "action_type": "claude_autofix" if prefix == "CLAUDE_OUTPUT:" else "gemini_autofix",
                 "parameters": {"summary": output[:1000]},
                 "execution_timestamp": ev.timestamp.replace(tzinfo=None),
             }
@@ -500,7 +503,7 @@ def build_fault_router_incidents(
                 "success": True,
             }
             inc["breadcrumbs"]["recent_logs"].append(
-                f"{ev.timestamp.isoformat()} GEMINI_OUTPUT"
+                f"{ev.timestamp.isoformat()} {prefix.rstrip(':')}"
             )
             continue
 

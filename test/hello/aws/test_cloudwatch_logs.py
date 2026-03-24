@@ -102,3 +102,46 @@ def test_build_incidents_from_events_keeps_distinct_reasons_separate():
         "external_timeout",
         "wrong_data",
     }
+
+
+def test_build_fault_router_incidents_supports_claude_output_and_fault_code_payload():
+    request_id = "123e4567-e89b-12d3-a456-426614174000"
+    events = [
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/aws/lambda/FaultRouter",
+            log_stream="2026/03/24/[$LATEST]abc",
+            timestamp_ms=1_700_000_000_000,
+            message=f"START RequestId: {request_id}",
+        ),
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/aws/lambda/FaultRouter",
+            log_stream="2026/03/24/[$LATEST]abc",
+            timestamp_ms=1_700_000_001_000,
+            message=(
+                'BACKBOARD_ANALYSIS: {"fault_code": "FAULT_DB_TIMEOUT", '
+                '"content": "The demo route exceeded the statement timeout."}'
+            ),
+        ),
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/aws/lambda/FaultRouter",
+            log_stream="2026/03/24/[$LATEST]abc",
+            timestamp_ms=1_700_000_002_000,
+            message="CLAUDE_OUTPUT: Reduced the pg_sleep duration to 1 second.",
+        ),
+        cloudwatch_logs.CloudWatchLogEvent(
+            log_group="/aws/lambda/FaultRouter",
+            log_stream="2026/03/24/[$LATEST]abc",
+            timestamp_ms=1_700_000_003_000,
+            message=f"END RequestId: {request_id}",
+        ),
+    ]
+
+    incidents = cloudwatch_logs.build_fault_router_incidents(events)
+
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert incident["error_code"] == "FAULT_DB_TIMEOUT"
+    assert incident["status"] == "resolved"
+    assert incident["root_cause"]["source"] == "backboard"
+    assert incident["root_cause"]["explanation"] == "The demo route exceeded the statement timeout."
+    assert incident["remediation"]["action_type"] == "claude_autofix"

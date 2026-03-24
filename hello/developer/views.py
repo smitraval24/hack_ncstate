@@ -518,6 +518,126 @@ def _incident_merge_key(incident: dict) -> tuple[str, str, str]:
     return (error_code, route, marker)
 
 
+def _is_blank_incident_value(value) -> bool:
+    """Return whether a display-oriented incident value is effectively empty."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() in {"", "-", "—"}
+    return False
+
+
+def _is_pending_root_cause(root_cause: dict | None) -> bool:
+    """Return whether the root-cause block still represents a placeholder."""
+    explanation = str((root_cause or {}).get("explanation") or "").strip()
+    if not explanation:
+        return True
+    return explanation.startswith("Pending ") or (
+        explanation == "Root-cause analysis is still pending for this incident."
+    )
+
+
+def _is_generic_incident_context(incident: dict) -> bool:
+    """Return whether an incident lacks route/reason detail for exact matching."""
+    route = str(incident.get("route") or "").strip()
+    symptoms = incident.get("symptoms") or {}
+    marker = str(symptoms.get("log_marker") or "").strip()
+    error_code = str(incident.get("error_code") or "").strip()
+    return route in {"", "-"} or marker in {"", "-", "—", error_code}
+
+
+def _combine_incident_records(primary: dict, secondary: dict) -> dict:
+    """Combine two incident records, keeping primary precedence and filling gaps."""
+    combined = dict(primary)
+    for section in ("symptoms", "breadcrumbs", "root_cause", "remediation", "verification"):
+        combined[section] = dict(primary.get(section) or {})
+
+    for key in ("route", "incident_type", "severity", "commit_sha", "run_url"):
+        if _is_blank_incident_value(combined.get(key)) and not _is_blank_incident_value(
+            secondary.get(key)
+        ):
+            combined[key] = secondary.get(key)
+
+    if combined.get("timestamp_resolved") is None and secondary.get("timestamp_resolved") is not None:
+        combined["timestamp_resolved"] = secondary.get("timestamp_resolved")
+
+    symptoms = combined["symptoms"]
+    other_symptoms = dict(secondary.get("symptoms") or {})
+    for key in ("latency_p95", "endpoint", "log_marker"):
+        primary_value = symptoms.get(key)
+        secondary_value = other_symptoms.get(key)
+        is_generic_log_marker = (
+            key == "log_marker"
+            and str(primary_value or "").strip() == str(combined.get("error_code") or "").strip()
+        )
+        if (
+            (_is_blank_incident_value(primary_value) or is_generic_log_marker)
+            and not _is_blank_incident_value(secondary_value)
+        ):
+            symptoms[key] = secondary_value
+    if symptoms.get("latency_p95_value") in (None, 0, 0.0) and other_symptoms.get(
+        "latency_p95_value"
+    ) not in (None, 0, 0.0):
+        symptoms["latency_p95_value"] = other_symptoms.get("latency_p95_value")
+    if not symptoms.get("affected_requests") and other_symptoms.get("affected_requests"):
+        symptoms["affected_requests"] = other_symptoms.get("affected_requests")
+
+    breadcrumbs = combined["breadcrumbs"]
+    other_breadcrumbs = dict(secondary.get("breadcrumbs") or {})
+    for list_key in ("recent_logs", "correlated_events"):
+        merged_values = list(
+            dict.fromkeys((breadcrumbs.get(list_key) or []) + (other_breadcrumbs.get(list_key) or []))
+        )
+        if merged_values:
+            breadcrumbs[list_key] = merged_values
+    metric_snapshot = dict(breadcrumbs.get("metric_snapshot") or {})
+    other_metric_snapshot = dict(other_breadcrumbs.get("metric_snapshot") or {})
+    for key, value in other_metric_snapshot.items():
+        if _is_blank_incident_value(metric_snapshot.get(key)) and not _is_blank_incident_value(value):
+            metric_snapshot[key] = value
+    if metric_snapshot:
+        breadcrumbs["metric_snapshot"] = metric_snapshot
+
+    root_cause = combined["root_cause"]
+    other_root_cause = dict(secondary.get("root_cause") or {})
+    if (
+        _is_pending_root_cause(root_cause)
+        and not _is_pending_root_cause(other_root_cause)
+        and other_root_cause.get("explanation")
+    ):
+        root_cause["explanation"] = other_root_cause.get("explanation")
+    if _is_blank_incident_value(root_cause.get("source")) and not _is_blank_incident_value(
+        other_root_cause.get("source")
+    ):
+        root_cause["source"] = other_root_cause.get("source")
+    if root_cause.get("confidence_score") is None and other_root_cause.get("confidence_score") is not None:
+        root_cause["confidence_score"] = other_root_cause.get("confidence_score")
+
+    remediation = combined["remediation"]
+    other_remediation = dict(secondary.get("remediation") or {})
+    if _is_blank_incident_value(remediation.get("action_type")) and not _is_blank_incident_value(
+        other_remediation.get("action_type")
+    ):
+        remediation["action_type"] = other_remediation.get("action_type")
+    parameters = dict(remediation.get("parameters") or {})
+    other_parameters = dict(other_remediation.get("parameters") or {})
+    for key, value in other_parameters.items():
+        if _is_blank_incident_value(parameters.get(key)) and not _is_blank_incident_value(value):
+            parameters[key] = value
+    if parameters:
+        remediation["parameters"] = parameters
+    if remediation.get("execution_timestamp") is None and other_remediation.get("execution_timestamp") is not None:
+        remediation["execution_timestamp"] = other_remediation.get("execution_timestamp")
+
+    verification = combined["verification"]
+    other_verification = dict(secondary.get("verification") or {})
+    for key, value in other_verification.items():
+        if verification.get(key) is None and value is not None:
+            verification[key] = value
+
+    return combined
+
+
 # This function handles the sync status work for this file.
 def _sync_status(incidents: list[dict]) -> list[dict]:
     """Derive status from verification result so it stays in sync.
@@ -744,6 +864,25 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
 
         return True
 
+    def _generic_fallback_matches(live_inc: dict) -> list[dict]:
+        competing_live = [
+            other
+            for other in live
+            if other is not live_inc
+            and other.get("error_code") == live_inc.get("error_code")
+            and _same_occurrence(live_inc, other)
+        ]
+        if competing_live:
+            return []
+
+        return [
+            inc
+            for inc in cloudwatch
+            if inc.get("error_code") == live_inc.get("error_code")
+            and _same_occurrence(live_inc, inc)
+            and _is_generic_incident_context(inc)
+        ]
+
     # Index CloudWatch incidents by merge key for matching.
     cw_by_key: dict[tuple[str, str, str], list[dict]] = {}
     for inc in cloudwatch:
@@ -759,6 +898,8 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
             inc for inc in cw_by_key.get(key, [])
             if _same_occurrence(live_inc, inc)
         ]
+        if not cw_matches:
+            cw_matches = _generic_fallback_matches(live_inc)
         if cw_matches:
             best_cw = max(
                 cw_matches,
@@ -776,12 +917,13 @@ def _merge_incidents(live: list[dict], cloudwatch: list[dict]) -> list[dict]:
                 _opened_at(best_cw),
             )
 
-            if cw_score > live_score and best_cw.get("id") not in matched_cw_ids:
-                merged.append(best_cw)
-                if best_cw.get("id"):
-                    matched_cw_ids.add(best_cw["id"])
+            if best_cw.get("id"):
+                matched_cw_ids.add(best_cw["id"])
+
+            if cw_score > live_score:
+                merged.append(_combine_incident_records(best_cw, live_inc))
             else:
-                merged.append(live_inc)
+                merged.append(_combine_incident_records(live_inc, best_cw))
         else:
             merged.append(live_inc)
 
@@ -1573,6 +1715,37 @@ def _force_ecs_deployment() -> bool:
 # Pipeline callback endpoints (called by Lambda + GitHub Actions)
 # ---------------------------------------------------------------------------
 
+def _normalize_rag_explanation(raw_value) -> str:
+    """Extract the human-readable analysis text from Backboard payloads."""
+    if raw_value is None:
+        return ""
+
+    if isinstance(raw_value, dict):
+        content = raw_value.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        try:
+            return json.dumps(raw_value)
+        except TypeError:
+            return str(raw_value)
+
+    text = str(raw_value).strip()
+    if not text:
+        return ""
+
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return text
+
+    if isinstance(payload, dict):
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+    return text
+
+
 # This function handles the pipeline pending work for this file.
 @developer.post("/developer/incidents/pipeline/pending")
 def pipeline_pending():
@@ -1592,7 +1765,7 @@ def pipeline_pending():
     if not fault_code:
         return jsonify({"success": False, "error": "fault_code required"}), 400
 
-    rag_explanation = data.get("rag_analysis", "")
+    rag_explanation = _normalize_rag_explanation(data.get("rag_analysis", ""))
     claude_output = data.get("claude_output", "")
     # Compute confidence: RAG source + explanation + action + claude output
     pending_confidence = 0.0
